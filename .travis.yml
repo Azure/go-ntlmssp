@@ -1,0 +1,15 @@
+sudo: false
+
+language: go
+
+before_script:
+  - go get -u golang.org/x/tools/cmd/vet
+  - go get -u github.com/golang/lint/golint
+
+go: tip
+script:
+  - test -z "$(gofmt -s -l . | tee /dev/stderr)"
+  - go build -v ./...
+  - test -z "$(go vet | tee /dev/stderr)"
+  - test -z "$(golint | tee /dev/stderr)"
+  - go test -v 
