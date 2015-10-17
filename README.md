@@ -1,6 +1,8 @@
 # go-ntlmssp
 Golang package that provides NTLM/Negotiate authentication over HTTP
 
+[![GoDoc](https://godoc.org/github.com/paulmey/go-ntlmssp?status.svg)](https://godoc.org/github.com/paulmey/go-ntlmssp) [![Build Status](https://travis-ci.org/paulmey/go-ntlmssp.svg?branch=dev)](https://travis-ci.org/paulmey/go-ntlmssp)
+
 Protocol details from https://msdn.microsoft.com/en-us/library/cc236621.aspx
 Implementation hints from http://davenport.sourceforge.net/ntlm.html
 
