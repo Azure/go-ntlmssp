@@ -3,13 +3,12 @@ sudo: false
 language: go
 
 before_script:
-  - go get -u golang.org/x/tools/cmd/vet
   - go get -u github.com/golang/lint/golint
 
-go: tip
+go: 1.6
 script:
   - test -z "$(gofmt -s -l . | tee /dev/stderr)"
+  - test -z "$(golint ./... |  tee /dev/stderr)"
+  - go vet ./...
   - go build -v ./...
-  - test -z "$(go vet | tee /dev/stderr)"
-  - test -z "$(golint | tee /dev/stderr)"
-  - go test -v 
+  - go test -v ./...
