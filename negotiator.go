@@ -3,6 +3,7 @@ package ntlmssp
 import (
 	"bytes"
 	"encoding/base64"
+	"io"
 	"io/ioutil"
 	"net/http"
 )
@@ -50,6 +51,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	if !resauth.IsNegotiate() {
 		// Unauthorized, Negotiate not requested, let's try with basic auth
 		req.Header.Set("Authorization", string(reqauth))
+		io.Copy(ioutil.Discard, res.Body)
 		res.Body.Close()
 		req.Body = ioutil.NopCloser(bytes.NewReader(body.Bytes()))
 
@@ -65,6 +67,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 
 	if resauth.IsNegotiate() {
 		// 401 with request:Basic and response:Negotiate
+		io.Copy(ioutil.Discard, res.Body)
 		res.Body.Close()
 
 		// recycle credentials
@@ -93,6 +96,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 			// Negotiation failed, let client deal with response
 			return res, nil
 		}
+		io.Copy(ioutil.Discard, res.Body)
 		res.Body.Close()
 
 		// send authenticate
