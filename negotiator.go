@@ -48,7 +48,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	}
 
 	resauth := authheader(res.Header.Get("Www-Authenticate"))
-	if !resauth.IsNegotiate() {
+	if !resauth.IsNegotiate() && !resauth.IsNTLM() {
 		// Unauthorized, Negotiate not requested, let's try with basic auth
 		req.Header.Set("Authorization", string(reqauth))
 		io.Copy(ioutil.Discard, res.Body)
@@ -65,7 +65,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 		resauth = authheader(res.Header.Get("Www-Authenticate"))
 	}
 
-	if resauth.IsNegotiate() {
+	if resauth.IsNegotiate() || resauth.IsNTLM() {
 		// 401 with request:Basic and response:Negotiate
 		io.Copy(ioutil.Discard, res.Body)
 		res.Body.Close()
@@ -78,7 +78,12 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 
 		// send negotiate
 		negotiateMessage := NewNegotiateMessage()
-		req.Header.Set("Authorization", "Negotiate "+base64.StdEncoding.EncodeToString(negotiateMessage))
+		if resauth.IsNTLM() {
+			req.Header.Set("Authorization", "NTLM "+base64.StdEncoding.EncodeToString(negotiateMessage))
+		} else {
+			req.Header.Set("Authorization", "Negotiate "+base64.StdEncoding.EncodeToString(negotiateMessage))
+		}
+
 		req.Body = ioutil.NopCloser(bytes.NewReader(body.Bytes()))
 
 		res, err = rt.RoundTrip(req)
@@ -92,7 +97,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 		if err != nil {
 			return nil, err
 		}
-		if !resauth.IsNegotiate() || len(challengeMessage) == 0 {
+		if !(resauth.IsNegotiate() || resauth.IsNTLM()) || len(challengeMessage) == 0 {
 			// Negotiation failed, let client deal with response
 			return res, nil
 		}
@@ -104,7 +109,12 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Authorization", "Negotiate "+base64.StdEncoding.EncodeToString(authenticateMessage))
+		if resauth.IsNTLM() {
+			req.Header.Set("Authorization", "NTLM "+base64.StdEncoding.EncodeToString(authenticateMessage))
+		} else {
+			req.Header.Set("Authorization", "Negotiate "+base64.StdEncoding.EncodeToString(authenticateMessage))
+		}
+
 		req.Body = ioutil.NopCloser(bytes.NewReader(body.Bytes()))
 
 		res, err = rt.RoundTrip(req)
