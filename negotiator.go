@@ -81,9 +81,9 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
        domain := ""
 
        if strings.Contains(u, "\\") {
-            u_components := strings.Split(u, "\\")
-            domain = u_components[0]
-            u = u_components[1]
+            ucomponents := strings.Split(u, "\\")
+            domain = ucomponents[0]
+            u = ucomponents[1]
        }
 
        // send negotiate
