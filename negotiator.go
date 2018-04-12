@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
+	"strings"
 )
 
 //Negotiator is a http.Roundtripper decorator that automatically
@@ -76,9 +77,21 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 			return nil, err
 		}
 
-		// send negotiate
-		negotiateMessage := NewNegotiateMessage()
-		if resauth.IsNTLM() {
+       // parse domain name from username
+       domain := ""
+
+       if strings.Contains(u, "\\") {
+            u_components := strings.Split(u, "\\")
+            domain = u_components[0]
+            u = u_components[1]
+       }
+
+       // send negotiate
+       negotiateMessage, err := NewNegotiateMessage(domain, "")
+       if err != nil {
+           return nil, err
+       }
+       if resauth.IsNTLM() {
 			req.Header.Set("Authorization", "NTLM "+base64.StdEncoding.EncodeToString(negotiateMessage))
 		} else {
 			req.Header.Set("Authorization", "Negotiate "+base64.StdEncoding.EncodeToString(negotiateMessage))
