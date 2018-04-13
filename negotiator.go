@@ -77,21 +77,21 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 			return nil, err
 		}
 
-       // parse domain name from username
-       domain := ""
+		// parse domain name from username
+		domain := ""
 
-       if strings.Contains(u, "\\") {
-            ucomponents := strings.Split(u, "\\")
-            domain = ucomponents[0]
-            u = ucomponents[1]
-       }
+		if strings.Contains(u, "\\") {
+			ucomponents := strings.Split(u, "\\")
+			domain = ucomponents[0]
+			u = ucomponents[1]
+		}
 
-       // send negotiate
-       negotiateMessage, err := NewNegotiateMessage(domain, "")
-       if err != nil {
-           return nil, err
-       }
-       if resauth.IsNTLM() {
+		// send negotiate
+		negotiateMessage, err := NewNegotiateMessage(domain, "")
+		if err != nil {
+			return nil, err
+		}
+		if resauth.IsNTLM() {
 			req.Header.Set("Authorization", "NTLM "+base64.StdEncoding.EncodeToString(negotiateMessage))
 		} else {
 			req.Header.Set("Authorization", "Negotiate "+base64.StdEncoding.EncodeToString(negotiateMessage))
