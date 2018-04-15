@@ -9,8 +9,8 @@ import (
 	"strings"
 )
 
+// GetDomain : parse domain name from based on slashes in the input
 func GetDomain(user string) (string, string) {
-	// parse domain name from based on slashes in the input
 	domain := ""
 
 	if strings.Contains(user, "\\") {
