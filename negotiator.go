@@ -9,6 +9,18 @@ import (
 	"strings"
 )
 
+func GetDomain(user string) (string, string) {
+	// parse domain name from based on slashes in the input
+	domain := ""
+
+	if strings.Contains(user, "\\") {
+		ucomponents := strings.SplitN(user, "\\", 2)
+		domain = ucomponents[0]
+		user = ucomponents[1]
+	}
+	return user, domain
+}
+
 //Negotiator is a http.Roundtripper decorator that automatically
 //converts basic authentication to NTLM/Negotiate authentication when appropriate.
 type Negotiator struct{ http.RoundTripper }
@@ -77,14 +89,9 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 			return nil, err
 		}
 
-		// parse domain name from username
+		// get domain from username
 		domain := ""
-
-		if strings.Contains(u, "\\") {
-			ucomponents := strings.Split(u, "\\")
-			domain = ucomponents[0]
-			u = ucomponents[1]
-		}
+		u, domain = GetDomain(u)
 
 		// send negotiate
 		negotiateMessage, err := NewNegotiateMessage(domain, "")
