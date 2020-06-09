@@ -49,6 +49,7 @@ jobs:
     steps:
       - checkout
       - run: go get -u $COMMON_GO_PACKAGES
+      - run: go get -t .
       
       - run:
           name: Run tests
@@ -86,4 +87,5 @@ jobs:
           name: build and test
           command: |
             cd ${env:GOPATH}\src\${env:PACKAGE_PATH}
+            go get -t .
             go test -v -race ./...
