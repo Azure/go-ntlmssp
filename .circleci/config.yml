@@ -72,7 +72,7 @@ jobs:
 
     environment:
       GOPATH: C:\Users\VssAdministrator\go
-      PACKAGE_PATH: github.com/launchdarkly/go-test-helpers
+      PACKAGE_PATH: github.com/launchdarkly/go-ntlmssp
 
     steps:
       - checkout
