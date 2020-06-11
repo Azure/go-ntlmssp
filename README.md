@@ -1,7 +1,9 @@
 # go-ntlmssp
 Golang package that provides NTLM/Negotiate authentication over HTTP
 
-[![GoDoc](https://godoc.org/github.com/Azure/go-ntlmssp?status.svg)](https://godoc.org/github.com/Azure/go-ntlmssp) [![Build Status](https://travis-ci.org/Azure/go-ntlmssp.svg?branch=dev)](https://travis-ci.org/Azure/go-ntlmssp)
+[![GoDoc](https://godoc.org/github.com/launchdarkly/go-ntlmssp?status.svg)](https://godoc.org/github.com/launchdarkly/go-ntlmssp) [![Circle CI](https://circleci.com/gh/launchdarkly/go-ntlmssp.svg?style=svg)](https://circleci.com/gh/launchdarkly/go-ntlmssp)
+
+This is a fork of [github.com/Azure/go-ntlmssp](https://github.com/Azure/go-ntlmssp), with minor changes for use in the [LaunchDarkly Go SDK](https://github.com/launchdarkly/go-server-sdk).
 
 Protocol details from https://msdn.microsoft.com/en-us/library/cc236621.aspx
 Implementation hints from http://davenport.sourceforge.net/ntlm.html
