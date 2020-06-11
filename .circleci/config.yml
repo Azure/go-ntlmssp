@@ -9,9 +9,11 @@ workflows:
       - go-test:
           name: Go 1.14
           docker-image: circleci/golang:1.14
+          build-as-module: true
       - go-test:
           name: Go 1.13
           docker-image: circleci/golang:1.13
+          build-as-module: true
       - go-test:
           name: Go 1.12
           docker-image: circleci/golang:1.12
@@ -35,6 +37,9 @@ jobs:
     parameters:
       docker-image:
         type: string
+      build-as-module:
+        type: boolean
+        default: false
 
     docker:
       - image: <<parameters.docker-image>>
@@ -49,7 +54,11 @@ jobs:
     steps:
       - checkout
       - run: go get -u $COMMON_GO_PACKAGES
-      - run: go get -t .
+
+      - unless:
+          condition: <<parameters.build-as-module>>
+          steps:
+            - run: go get -t .
       
       - run:
           name: Run tests
