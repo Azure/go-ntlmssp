@@ -1,0 +1,100 @@
+version: 2.1
+
+orbs:
+  win: circleci/windows@1.0.0
+
+workflows:
+  workflow:
+    jobs:
+      - go-test:
+          name: Go 1.14
+          docker-image: circleci/golang:1.14
+          build-as-module: true
+      - go-test:
+          name: Go 1.13
+          docker-image: circleci/golang:1.13
+          build-as-module: true
+      - go-test:
+          name: Go 1.12
+          docker-image: circleci/golang:1.12
+      - go-test:
+          name: Go 1.11
+          docker-image: circleci/golang:1.11
+      - go-test:
+          name: Go 1.10
+          docker-image: circleci/golang:1.10
+      - go-test:
+          name: Go 1.9
+          docker-image: circleci/golang:1.9
+      - go-test:
+          name: Go 1.8
+          docker-image: circleci/golang:1.8
+      - go-test-windows:
+          name: Windows
+
+jobs:
+  go-test:
+    parameters:
+      docker-image:
+        type: string
+      build-as-module:
+        type: boolean
+        default: false
+
+    docker:
+      - image: <<parameters.docker-image>>
+        environment:
+          CIRCLE_TEST_REPORTS: /tmp/circle-reports
+          CIRCLE_ARTIFACTS: /tmp/circle-artifacts
+          COMMON_GO_PACKAGES: >
+            github.com/jstemmer/go-junit-report
+
+    working_directory: /go/src/github.com/launchdarkly/go-ntlmssp
+
+    steps:
+      - checkout
+      - run: go get -u $COMMON_GO_PACKAGES
+
+      - unless:
+          condition: <<parameters.build-as-module>>
+          steps:
+            - run: go get -t .
+      
+      - run:
+          name: Run tests
+          command: |
+            mkdir -p $CIRCLE_TEST_REPORTS
+            mkdir -p $CIRCLE_ARTIFACTS
+            trap "go-junit-report < $CIRCLE_ARTIFACTS/report.txt > $CIRCLE_TEST_REPORTS/junit.xml" EXIT
+            go test -v -race | tee $CIRCLE_ARTIFACTS/report.txt
+
+      - store_test_results:
+          path: /tmp/circle-reports
+
+      - store_artifacts:
+          path: /tmp/circle-artifacts
+
+  go-test-windows:
+    executor:
+      name: win/vs2019
+      shell: powershell.exe
+
+    environment:
+      GOPATH: C:\Users\VssAdministrator\go
+      PACKAGE_PATH: github.com/launchdarkly/go-ntlmssp
+
+    steps:
+      - checkout
+      - run: go version
+      - run:
+          name: move source
+          command: |
+            go env GOPATH
+            mkdir ${env:GOPATH}\src\${env:PACKAGE_PATH}
+            mv * ${env:GOPATH}\src\${env:PACKAGE_PATH}
+      - run:
+          name: build and test
+          command: |
+            cd ${env:GOPATH}\src\${env:PACKAGE_PATH}
+            go get -t .
+            go test -v -race ./...
