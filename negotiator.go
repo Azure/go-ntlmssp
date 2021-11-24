@@ -33,9 +33,11 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	if rt == nil {
 		rt = http.DefaultTransport
 	}
+
 	// If it is not basic auth, just round trip the request as usual
-	reqauth := authheader(req.Header.Get("Authorization"))
-	if !reqauth.IsBasic() {
+	reqauth := authheader(req.Header.Values("Authorization"))
+	isBasic, authHeader := reqauth.IsBasic()
+	if !isBasic {
 		return rt.RoundTrip(req)
 	}
 	// Save request body
@@ -59,11 +61,10 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	if res.StatusCode != http.StatusUnauthorized {
 		return res, err
 	}
-
-	resauth := authheader(res.Header.Get("Www-Authenticate"))
+	resauth := authheader(res.Header.Values("Www-Authenticate"))
 	if !resauth.IsNegotiate() && !resauth.IsNTLM() {
 		// Unauthorized, Negotiate not requested, let's try with basic auth
-		req.Header.Set("Authorization", string(reqauth))
+		req.Header.Set("Authorization", string(authHeader))
 		io.Copy(ioutil.Discard, res.Body)
 		res.Body.Close()
 		req.Body = ioutil.NopCloser(bytes.NewReader(body.Bytes()))
@@ -75,7 +76,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 		if res.StatusCode != http.StatusUnauthorized {
 			return res, err
 		}
-		resauth = authheader(res.Header.Get("Www-Authenticate"))
+		resauth = authheader(res.Header.Values("Www-Authenticate"))
 	}
 
 	if resauth.IsNegotiate() || resauth.IsNTLM() {
@@ -112,7 +113,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 		}
 
 		// receive challenge?
-		resauth = authheader(res.Header.Get("Www-Authenticate"))
+		resauth = authheader(res.Header.Values("Www-Authenticate"))
 		challengeMessage, err := resauth.GetData()
 		if err != nil {
 			return nil, err
