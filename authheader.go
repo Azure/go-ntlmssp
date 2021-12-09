@@ -7,13 +7,22 @@ import (
 
 type authheader []string
 
-func (h authheader) IsBasic() (bool, string) {
+func (h authheader) IsBasic() bool {
 	for _, s := range h {
 		if strings.HasPrefix(string(s), "Basic ") {
-			return true, s
+			return true
 		}
 	}
-	return false, ""
+	return false
+}
+
+func (h authheader) Basic() string {
+	for _, s := range h {
+		if strings.HasPrefix(string(s), "Basic ") {
+			return s
+		}
+	}
+	return ""
 }
 
 func (h authheader) IsNegotiate() bool {
