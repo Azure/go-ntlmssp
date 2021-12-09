@@ -36,7 +36,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 
 	// If it is not basic auth, just round trip the request as usual
 	reqauth := authheader(req.Header.Values("Authorization"))
-	isBasic, authHeader := reqauth.IsBasic()
+	isBasic, reqauthBasic := reqauth.IsBasic()
 	if !isBasic {
 		return rt.RoundTrip(req)
 	}
