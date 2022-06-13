@@ -10,6 +10,7 @@ import (
 )
 
 // GetDomain : parse domain name from based on slashes in the input
+// Need to check for upn as well
 func GetDomain(user string) (string, string) {
 	domain := ""
 
