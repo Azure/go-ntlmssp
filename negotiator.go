@@ -18,6 +18,7 @@ func GetDomain(user string) (string, string, bool) {
 	if strings.Contains(user, "\\") {
 		ucomponents := strings.SplitN(user, "\\", 2)
 		domain = ucomponents[0]
+		user = ucomponents[1]
 		domainNeeded = true
 	} else if strings.Contains(user, "@") {
 		domainNeeded = false
