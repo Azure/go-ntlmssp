@@ -18,3 +18,7 @@ func DefaultVersion() Version {
 		NTLMRevisionCurrent: 15,
 	}
 }
+
+func EmptyVersion() Version {
+	return Version{}
+}

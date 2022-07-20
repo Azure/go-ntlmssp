@@ -39,12 +39,17 @@ func NewNegotiateMessage(domainName, workstationName string) ([]byte, error) {
 		flags |= negotiateFlagNTLMSSPNEGOTIATEOEMWORKSTATIONSUPPLIED
 	}
 
+	version := EmptyVersion()
+	if flags.Has(negotiateFlagNTLMSSPNEGOTIATEVERSION) {
+		version = DefaultVersion()
+	}
+
 	msg := negotiateMessageFields{
 		messageHeader:  newMessageHeader(1),
 		NegotiateFlags: flags,
 		Domain:         newVarField(&payloadOffset, len(domainName)),
 		Workstation:    newVarField(&payloadOffset, len(workstationName)),
-		Version:        DefaultVersion(),
+		Version:        version,
 	}
 
 	b := bytes.Buffer{}
