@@ -86,7 +86,7 @@ func (m authenticateMessage) MarshalBinary() ([]byte, error) {
 
 //ProcessChallenge crafts an AUTHENTICATE message in response to the CHALLENGE message
 //that was received from the server
-func ProcessChallenge(negotiateMessageData, challengeMessageData []byte, user, password, domain string) ([]byte, error) {
+func ProcessChallenge(negotiateMessageData, challengeMessageData []byte, user, password, domain, spn string) ([]byte, error) {
 	if user == "" && password == "" {
 		return nil, errors.New("Anonymous authentication not supported")
 	}
@@ -111,11 +111,9 @@ func ProcessChallenge(negotiateMessageData, challengeMessageData []byte, user, p
 
 	timestamp := cm.TargetInfo[avIDMsvAvTimestamp]
 	if timestamp == nil { // no time sent, take current time
-		ft := uint64(time.Now().UnixNano()) / 100
-		ft += 116444736000000000 // add time between unix & windows offset
-		timestamp = make([]byte, 8)
-		binary.LittleEndian.PutUint64(timestamp, ft)
+		timestamp = getTimestamp()
 	}
+	cm.TargetInfo[avIDMsvAvTargetName] = toUnicode(spn)
 
 	clientChallenge := make([]byte, 8)
 	rand.Reader.Read(clientChallenge)
@@ -142,4 +140,15 @@ func ProcessChallenge(negotiateMessageData, challengeMessageData []byte, user, p
 	copy(authenticateMessageData[micFieldOffset:micFieldOffset+micFieldLength], mic)
 
 	return authenticateMessageData, nil
+}
+
+// Prepares current timestamp in format specified in [MS-NLMP](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-nlmp/83f5e789-660d-4781-8491-5f8c6641f75e)
+// A FILETIME structure ([MS-DTYP] section 2.3.3) in little-endian byte order that contains the server local time.
+// This structure is always sent in the CHALLENGE_MESSAGE.
+func getTimestamp() []byte {
+	ft := uint64(time.Now().UnixNano()) / 100
+	ft += 116444736000000000 // add time between unix & windows offset
+	timestamp := make([]byte, 8)
+	binary.LittleEndian.PutUint64(timestamp, ft)
+	return timestamp
 }

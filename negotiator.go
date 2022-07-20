@@ -123,8 +123,10 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 		io.Copy(ioutil.Discard, res.Body)
 		res.Body.Close()
 
+		spn := getSpn(req.Host)
+
 		// send authenticate
-		authenticateMessage, err := ProcessChallenge(negotiateMessage, challengeMessage, u, p, domain)
+		authenticateMessage, err := ProcessChallenge(negotiateMessage, challengeMessage, u, p, domain, spn)
 		if err != nil {
 			return nil, err
 		}
@@ -140,4 +142,12 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	}
 
 	return res, err
+}
+
+func getSpn(host string) string {
+	spn := ""
+	if host != "" {
+		spn = "HOST/" + strings.ToLower(host)
+	}
+	return spn
 }
