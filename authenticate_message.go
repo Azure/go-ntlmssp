@@ -87,7 +87,7 @@ func (m authenticateMessage) MarshalBinary() ([]byte, error) {
 
 //ProcessChallenge crafts an AUTHENTICATE message in response to the CHALLENGE message
 //that was received from the server
-func ProcessChallenge(negotiateMessageData, challengeMessageData []byte, user, password, domain, spn string) ([]byte, error) {
+func ProcessChallenge(negotiateMessageData, challengeMessageData []byte, user, password, domain, spn string, channelBinding []byte) ([]byte, error) {
 	if user == "" && password == "" {
 		return nil, errors.New("Anonymous authentication not supported")
 	}
@@ -112,11 +112,19 @@ func ProcessChallenge(negotiateMessageData, challengeMessageData []byte, user, p
 
 	targetInfo := cm.TargetInfo
 
-	targetInfo, serverTimestamp := updateTargetInfoAvPairs(targetInfo, spn)
+	cbt, err := computeChannelBindingHash(channelBinding)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute channel binding token: %w", err)
+	}
+
+	targetInfo, serverTimestamp := updateTargetInfoAvPairs(targetInfo, cbt, spn)
 
 	timestamp := getTimestamp(serverTimestamp)
-	clientChallenge := getClientChallenge()
+
 	ntlmV2Hash := getNtlmV2Hash(password, am.UserName, am.TargetName)
+
+	clientChallenge := getClientChallenge()
+
 	targetInfoData, err := targetInfo.marshal()
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal TargetInfo AvPair struct: %w", err)
@@ -166,7 +174,7 @@ func getClientChallenge() []byte {
 	return clientChallenge
 }
 
-func updateTargetInfoAvPairs(targetInfo AvPairs, spn string) (AvPairs, []byte) {
+func updateTargetInfoAvPairs(targetInfo AvPairs, channelBindingHash []byte, spn string) (AvPairs, []byte) {
 
 	serverTimestamp := targetInfo[avIDMsvAvTimestamp]
 
@@ -184,7 +192,7 @@ func updateTargetInfoAvPairs(targetInfo AvPairs, spn string) (AvPairs, []byte) {
 
 	// EPA support
 	{
-		// TODO: add channel binding
+		targetInfo[avIDMsvChannelBindings] = channelBindingHash
 		targetInfo[avIDMsvAvTargetName] = toUnicode(spn)
 	}
 

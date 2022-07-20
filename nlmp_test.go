@@ -158,3 +158,24 @@ func TestNTLMv2Hash(t *testing.T) {
 		t.Fatalf("expected %v, got %v", expected, v)
 	}
 }
+
+func TestComputeBindingChannelHash(t *testing.T) {
+	channelBindingDouble := getChannelBindingDouble()
+
+	hash, _ := computeChannelBindingHash(channelBindingDouble)
+	if len(hash) != 16 {
+		t.Errorf("expected hash of len(%d), got len(%d)", 16, len(hash))
+	}
+	allZeroes := make([]byte, 16)
+	if bytes.Equal(hash, allZeroes) {
+		t.Error("expected non-zero hash")
+	}
+}
+
+func getChannelBindingDouble() []byte {
+	buf := bytes.NewBuffer(make([]byte, 0, 30))
+	buf.WriteString("tls-server-end-point:")
+	buf.Write([]byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x8})
+	channelBindingDouble := buf.Bytes()
+	return channelBindingDouble
+}

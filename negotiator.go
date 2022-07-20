@@ -2,7 +2,11 @@ package ntlmssp
 
 import (
 	"bytes"
+	"crypto"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
+	"errors"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -125,8 +129,16 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 
 		spn := getSpn(req.Host)
 
+		var channelBinding []byte = nil
+		if res.TLS != nil {
+			channelBinding, err = makeChannelBinding(*res.TLS)
+			if err != nil {
+				return nil, errors.New("couldn't make TLS channel binding")
+			}
+		}
+
 		// send authenticate
-		authenticateMessage, err := ProcessChallenge(negotiateMessage, challengeMessage, u, p, domain, spn)
+		authenticateMessage, err := ProcessChallenge(negotiateMessage, challengeMessage, u, p, domain, spn, channelBinding)
 		if err != nil {
 			return nil, err
 		}
@@ -144,10 +156,41 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	return res, err
 }
 
+func makeChannelBinding(state tls.ConnectionState) ([]byte, error) {
+
+	certificate := state.PeerCertificates[0]
+	prefix := []byte("tls-server-end-point:")
+
+	if certificate == nil {
+		return nil, errors.New("TLS connection is missing server certificate")
+	}
+
+	// choose the channel binding hash type
+	// Use the same hash type used for the certificate signature, except for MD5 and SHA-1 which
+	// use SHA256
+	hashType := crypto.SHA256
+	switch certificate.SignatureAlgorithm {
+	case x509.SHA384WithRSA, x509.ECDSAWithSHA384, x509.SHA384WithRSAPSS:
+		hashType = crypto.SHA384
+	case x509.SHA512WithRSA, x509.ECDSAWithSHA512, x509.SHA512WithRSAPSS:
+		hashType = crypto.SHA512
+	}
+
+	hasher := hashType.New()
+	_, _ = hasher.Write(certificate.Raw)
+	data := hasher.Sum(nil)
+
+	buf := bytes.NewBuffer(make([]byte, 0, len(prefix)+len(data)))
+	buf.Write(prefix)
+	buf.Write(data)
+
+	return buf.Bytes(), nil
+}
+
 func getSpn(host string) string {
 	spn := ""
 	if host != "" {
-		spn = "HOST/" + strings.ToLower(host)
+		spn = "HTTP/" + strings.ToLower(host)
 	}
 	return spn
 }
