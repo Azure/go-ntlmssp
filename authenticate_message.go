@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -109,19 +110,20 @@ func ProcessChallenge(negotiateMessageData, challengeMessageData []byte, user, p
 		NegotiateFlags: cm.NegotiateFlags,
 	}
 
-	timestamp := cm.TargetInfo[avIDMsvAvTimestamp]
-	if timestamp == nil { // no time sent, take current time
-		timestamp = getTimestamp()
+	targetInfo := cm.TargetInfo
+
+	targetInfo, serverTimestamp := updateTargetInfoAvPairs(targetInfo, spn)
+
+	timestamp := getTimestamp(serverTimestamp)
+	clientChallenge := getClientChallenge()
+	ntlmV2Hash := getNtlmV2Hash(password, am.UserName, am.TargetName)
+	targetInfoData, err := targetInfo.marshal()
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal TargetInfo AvPair struct: %w", err)
 	}
-	cm.TargetInfo[avIDMsvAvTargetName] = toUnicode(spn)
-
-	clientChallenge := make([]byte, 8)
-	rand.Reader.Read(clientChallenge)
-
-	ntlmV2Hash := getNtlmV2Hash(password, user, cm.TargetName)
 
 	NtChallengeResponse, sessionKey := computeNtlmV2Response(ntlmV2Hash,
-		cm.ServerChallenge[:], clientChallenge, timestamp, cm.TargetInfoRaw)
+		cm.ServerChallenge[:], clientChallenge, timestamp, targetInfoData)
 	am.NtChallengeResponse = NtChallengeResponse
 
 	if cm.TargetInfoRaw == nil {
@@ -142,13 +144,49 @@ func ProcessChallenge(negotiateMessageData, challengeMessageData []byte, user, p
 	return authenticateMessageData, nil
 }
 
-// Prepares current timestamp in format specified in [MS-NLMP](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-nlmp/83f5e789-660d-4781-8491-5f8c6641f75e)
-// A FILETIME structure ([MS-DTYP] section 2.3.3) in little-endian byte order that contains the server local time.
-// This structure is always sent in the CHALLENGE_MESSAGE.
-func getTimestamp() []byte {
-	ft := uint64(time.Now().UnixNano()) / 100
-	ft += 116444736000000000 // add time between unix & windows offset
-	timestamp := make([]byte, 8)
-	binary.LittleEndian.PutUint64(timestamp, ft)
-	return timestamp
+func getTimestamp(serverTimestamp []byte) []byte {
+	if serverTimestamp != nil { // no time sent, take current time
+		return serverTimestamp
+	} else {
+		// Prepares current timestamp in format specified in
+		// [MS-NLMP](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-nlmp/83f5e789-660d-4781-8491-5f8c6641f75e)
+		// A FILETIME structure ([MS-DTYP] section 2.3.3) in little-endian byte order that contains the server local
+		// time. This structure is always sent in the CHALLENGE_MESSAGE.
+		ft := uint64(time.Now().UnixNano()) / 100
+		ft += 116444736000000000 // add time between unix & windows offset
+		timestamp := make([]byte, 8)
+		binary.LittleEndian.PutUint64(timestamp, ft)
+		return timestamp
+	}
+}
+
+func getClientChallenge() []byte {
+	clientChallenge := make([]byte, 8)
+	rand.Reader.Read(clientChallenge)
+	return clientChallenge
+}
+
+func updateTargetInfoAvPairs(targetInfo AvPairs, spn string) (AvPairs, []byte) {
+
+	serverTimestamp := targetInfo[avIDMsvAvTimestamp]
+
+	// update AvFlags - MIC present
+	{
+		flags := targetInfo[avIDMsvAvFlags]
+		if flags == nil {
+			flags = make([]byte, 4)
+			targetInfo[avIDMsvAvFlags] = flags
+		}
+		avFlags := AvFlags(binary.LittleEndian.Uint32(flags))
+		avFlags.Set(AvFlagMICPresent)
+		binary.LittleEndian.PutUint32(flags, uint32(avFlags))
+	}
+
+	// EPA support
+	{
+		// TODO: add channel binding
+		targetInfo[avIDMsvAvTargetName] = toUnicode(spn)
+	}
+
+	return targetInfo, serverTimestamp
 }
