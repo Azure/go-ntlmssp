@@ -8,6 +8,7 @@
 package ntlmssp
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/md5"
 	"golang.org/x/crypto/md4"
@@ -24,18 +25,19 @@ func getNtlmHash(password string) []byte {
 	return hash.Sum(nil)
 }
 
-func computeNtlmV2Response(ntlmV2Hash, serverChallenge, clientChallenge,
-	timestamp, targetInfo []byte) []byte {
+func computeNtlmV2Response(ntlmV2Hash, serverChallenge, clientChallenge, timestamp, targetInfo []byte) ([]byte, []byte) {
 
-	temp := []byte{1, 1, 0, 0, 0, 0, 0, 0}
-	temp = append(temp, timestamp...)
-	temp = append(temp, clientChallenge...)
-	temp = append(temp, 0, 0, 0, 0)
-	temp = append(temp, targetInfo...)
-	temp = append(temp, 0, 0, 0, 0)
+	buf := bytes.NewBuffer([]byte{1, 1, 0, 0, 0, 0, 0, 0})
+	buf.Write(timestamp)
+	buf.Write(clientChallenge)
+	buf.Write([]byte{0, 0, 0, 0})
+	buf.Write(targetInfo)
+	buf.Write([]byte{0, 0, 0, 0})
 
-	NTProofStr := hmacMd5(ntlmV2Hash, serverChallenge, temp)
-	return append(NTProofStr, temp...)
+	NTProofStr := hmacMd5(ntlmV2Hash, serverChallenge, buf.Bytes())
+	sessionKey := hmacMd5(ntlmV2Hash, NTProofStr)
+
+	return append(NTProofStr, buf.Bytes()...), sessionKey
 }
 
 func computeLmV2Response(ntlmV2Hash, serverChallenge, clientChallenge []byte) []byte {
@@ -48,4 +50,17 @@ func hmacMd5(key []byte, data ...[]byte) []byte {
 		mac.Write(d)
 	}
 	return mac.Sum(nil)
+}
+
+func md5sum(target []byte, data ...[]byte) []byte {
+	h := md5.New()
+	for _, d := range data {
+		h.Write(d)
+	}
+	return h.Sum(target)
+
+}
+
+func computeMIC(sessionKey []byte, messages ...[]byte) []byte {
+	return hmacMd5(sessionKey, messages...)
 }
