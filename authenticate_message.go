@@ -11,7 +11,7 @@ import (
 const micFieldOffset = 72
 const micFieldLength = 16
 
-type authenicateMessage struct {
+type authenticateMessage struct {
 	LmChallengeResponse []byte
 	NtChallengeResponse []byte
 
@@ -37,7 +37,7 @@ type authenticateMessageFields struct {
 	MIC
 }
 
-func (m authenicateMessage) MarshalBinary() ([]byte, error) {
+func (m authenticateMessage) MarshalBinary() ([]byte, error) {
 	if !m.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEUNICODE) {
 		return nil, errors.New("Only unicode is supported")
 	}
@@ -103,7 +103,7 @@ func ProcessChallenge(negotiateMessageData, challengeMessageData []byte, user, p
 		return nil, errors.New("Key exchange requested but not supported (NTLMSSP_NEGOTIATE_KEY_EXCH)")
 	}
 
-	am := authenicateMessage{
+	am := authenticateMessage{
 		UserName:       user,
 		TargetName:     domain,
 		NegotiateFlags: cm.NegotiateFlags,
