@@ -1,9 +1,9 @@
 package ntlmssp
 
-type negotiateFlags uint32
+type NegotiateFlags uint32
 
 const (
-	/*A*/ negotiateFlagNTLMSSPNEGOTIATEUNICODE negotiateFlags = 1 << 0
+	/*A*/ negotiateFlagNTLMSSPNEGOTIATEUNICODE NegotiateFlags = 1 << 0
 	/*B*/ negotiateFlagNTLMNEGOTIATEOEM = 1 << 1
 	/*C*/ negotiateFlagNTLMSSPREQUESTTARGET = 1 << 2
 
@@ -43,10 +43,16 @@ const (
 	/*W*/ negotiateFlagNTLMSSPNEGOTIATE56 = 1 << 31
 )
 
-func (field negotiateFlags) Has(flags negotiateFlags) bool {
+func (field NegotiateFlags) Has(flags NegotiateFlags) bool {
 	return field&flags == flags
 }
 
-func (field *negotiateFlags) Unset(flags negotiateFlags) {
+func (field *NegotiateFlags) Unset(flags NegotiateFlags) {
 	*field = *field ^ (*field & flags)
 }
+
+var defaultFlags = negotiateFlagNTLMSSPNEGOTIATEEXTENDEDSESSIONSECURITY |
+	negotiateFlagNTLMSSPNEGOTIATEALWAYSSIGN |
+	negotiateFlagNTLMSSPNEGOTIATENTLM |
+	negotiateFlagNTLMSSPREQUESTTARGET |
+	negotiateFlagNTLMSSPNEGOTIATEUNICODE

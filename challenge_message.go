@@ -9,7 +9,7 @@ import (
 type challengeMessageFields struct {
 	messageHeader
 	TargetName      varField
-	NegotiateFlags  negotiateFlags
+	NegotiateFlags  NegotiateFlags
 	ServerChallenge [8]byte
 	_               [8]byte
 	TargetInfo      varField

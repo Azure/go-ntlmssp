@@ -19,7 +19,7 @@ type authenticateMessage struct {
 	TargetName string
 	UserName   string
 
-	NegotiateFlags negotiateFlags
+	NegotiateFlags NegotiateFlags
 	Version
 }
 
@@ -33,16 +33,12 @@ type authenticateMessageFields struct {
 	UserName            varField
 	Workstation         varField
 	_                   [8]byte
-	NegotiateFlags      negotiateFlags
+	NegotiateFlags      NegotiateFlags
 	Version
 	MIC
 }
 
 func (m authenticateMessage) MarshalBinary() ([]byte, error) {
-	if !m.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEUNICODE) {
-		return nil, errors.New("Only unicode is supported")
-	}
-
 	target, user := toUnicode(m.TargetName), toUnicode(m.UserName)
 	workstation := toUnicode("")
 
@@ -57,8 +53,6 @@ func (m authenticateMessage) MarshalBinary() ([]byte, error) {
 		NegotiateFlags:      m.NegotiateFlags,
 		Version:             m.Version,
 	}
-
-	f.NegotiateFlags.Unset(negotiateFlagNTLMSSPNEGOTIATEVERSION)
 
 	b := bytes.Buffer{}
 	if err := binary.Write(&b, binary.LittleEndian, &f); err != nil {
@@ -104,10 +98,16 @@ func ProcessChallenge(negotiateMessageData, challengeMessageData []byte, user, p
 		return nil, errors.New("Key exchange requested but not supported (NTLMSSP_NEGOTIATE_KEY_EXCH)")
 	}
 
+	if !cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEUNICODE) {
+		return nil, errors.New("Only unicode is supported")
+	}
+
+	flags := (defaultFlags & cm.NegotiateFlags) | negotiateFlagNTLMSSPNEGOTIATEEXTENDEDSESSIONSECURITY
+
 	am := authenticateMessage{
 		UserName:       user,
 		TargetName:     domain,
-		NegotiateFlags: cm.NegotiateFlags,
+		NegotiateFlags: flags,
 	}
 
 	targetInfo := cm.TargetInfo

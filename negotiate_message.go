@@ -11,19 +11,13 @@ const expMsgBodyLen = 40
 
 type negotiateMessageFields struct {
 	messageHeader
-	NegotiateFlags negotiateFlags
+	NegotiateFlags NegotiateFlags
 
 	Domain      varField
 	Workstation varField
 
 	Version
 }
-
-var defaultFlags = negotiateFlagNTLMSSPNEGOTIATETARGETINFO |
-	negotiateFlagNTLMSSPNEGOTIATE56 |
-	negotiateFlagNTLMSSPNEGOTIATE128 |
-	negotiateFlagNTLMSSPNEGOTIATEUNICODE |
-	negotiateFlagNTLMSSPNEGOTIATEEXTENDEDSESSIONSECURITY
 
 //NewNegotiateMessage creates a new NEGOTIATE message with the
 //flags that this package supports.
