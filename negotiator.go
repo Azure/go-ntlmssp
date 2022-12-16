@@ -132,7 +132,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 		res.Body.Close()
 
 		// send authenticate
-		authenticateMessage, err := ProcessChallenge(challengeMessage, u, p, domainNeeded)
+		authenticateMessage, err := ProcessChallenge(challengeMessage, u, p, domainNeeded, domain)
 		if err != nil {
 			return nil, err
 		}

@@ -82,7 +82,7 @@ func (m authenicateMessage) MarshalBinary() ([]byte, error) {
 
 //ProcessChallenge crafts an AUTHENTICATE message in response to the CHALLENGE message
 //that was received from the server
-func ProcessChallenge(challengeMessageData []byte, user, password string, domainNeeded bool) ([]byte, error) {
+func ProcessChallenge(challengeMessageData []byte, user, password string, domainNeeded bool, domain string) ([]byte, error) {
 	if user == "" && password == "" {
 		return nil, errors.New("Anonymous authentication not supported")
 	}
@@ -101,6 +101,9 @@ func ProcessChallenge(challengeMessageData []byte, user, password string, domain
 	
 	if !domainNeeded {
 		cm.TargetName = ""
+	} else {
+		// use user's domain for authentication, not server domain
+		cm.TargetName = domain
 	}
 
 	am := authenicateMessage{
