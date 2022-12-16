@@ -4,26 +4,26 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
-	"strings"
+	"fmt"
 	"time"
 )
 
-type authenicateMessage struct {
+const micFieldOffset = 72
+const micFieldLength = 16
+
+type authenticateMessage struct {
 	LmChallengeResponse []byte
 	NtChallengeResponse []byte
 
 	TargetName string
 	UserName   string
 
-	// only set if negotiateFlag_NTLMSSP_NEGOTIATE_KEY_EXCH
-	EncryptedRandomSessionKey []byte
-
-	NegotiateFlags negotiateFlags
-
-	MIC []byte
+	NegotiateFlags NegotiateFlags
+	Version
 }
+
+type MIC [16]byte
 
 type authenticateMessageFields struct {
 	messageHeader
@@ -33,29 +33,26 @@ type authenticateMessageFields struct {
 	UserName            varField
 	Workstation         varField
 	_                   [8]byte
-	NegotiateFlags      negotiateFlags
+	NegotiateFlags      NegotiateFlags
+	Version
+	MIC
 }
 
-func (m authenicateMessage) MarshalBinary() ([]byte, error) {
-	if !m.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEUNICODE) {
-		return nil, errors.New("Only unicode is supported")
-	}
-
+func (m authenticateMessage) MarshalBinary() ([]byte, error) {
 	target, user := toUnicode(m.TargetName), toUnicode(m.UserName)
 	workstation := toUnicode("")
 
 	ptr := binary.Size(&authenticateMessageFields{})
 	f := authenticateMessageFields{
 		messageHeader:       newMessageHeader(3),
-		NegotiateFlags:      m.NegotiateFlags,
 		LmChallengeResponse: newVarField(&ptr, len(m.LmChallengeResponse)),
 		NtChallengeResponse: newVarField(&ptr, len(m.NtChallengeResponse)),
 		TargetName:          newVarField(&ptr, len(target)),
 		UserName:            newVarField(&ptr, len(user)),
 		Workstation:         newVarField(&ptr, len(workstation)),
+		NegotiateFlags:      m.NegotiateFlags,
+		Version:             m.Version,
 	}
-
-	f.NegotiateFlags.Unset(negotiateFlagNTLMSSPNEGOTIATEVERSION)
 
 	b := bytes.Buffer{}
 	if err := binary.Write(&b, binary.LittleEndian, &f); err != nil {
@@ -77,12 +74,14 @@ func (m authenicateMessage) MarshalBinary() ([]byte, error) {
 		return nil, err
 	}
 
-	return b.Bytes(), nil
+	authenticateMessageData := b.Bytes()
+
+	return authenticateMessageData, nil
 }
 
 //ProcessChallenge crafts an AUTHENTICATE message in response to the CHALLENGE message
 //that was received from the server
-func ProcessChallenge(challengeMessageData []byte, user, password string, domainNeeded bool) ([]byte, error) {
+func ProcessChallenge(negotiateMessageData, challengeMessageData []byte, user, password, domain, spn string, channelBinding []byte) ([]byte, error) {
 	if user == "" && password == "" {
 		return nil, errors.New("Anonymous authentication not supported")
 	}
@@ -98,90 +97,104 @@ func ProcessChallenge(challengeMessageData []byte, user, password string, domain
 	if cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEKEYEXCH) {
 		return nil, errors.New("Key exchange requested but not supported (NTLMSSP_NEGOTIATE_KEY_EXCH)")
 	}
-	
-	if !domainNeeded {
-		cm.TargetName = ""
+
+	if !cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEUNICODE) {
+		return nil, errors.New("Only unicode is supported")
 	}
 
-	am := authenicateMessage{
+	flags := (defaultFlags & cm.NegotiateFlags) | negotiateFlagNTLMSSPNEGOTIATEEXTENDEDSESSIONSECURITY
+
+	am := authenticateMessage{
 		UserName:       user,
-		TargetName:     cm.TargetName,
-		NegotiateFlags: cm.NegotiateFlags,
+		TargetName:     domain,
+		NegotiateFlags: flags,
 	}
 
-	timestamp := cm.TargetInfo[avIDMsvAvTimestamp]
-	if timestamp == nil { // no time sent, take current time
-		ft := uint64(time.Now().UnixNano()) / 100
-		ft += 116444736000000000 // add time between unix & windows offset
-		timestamp = make([]byte, 8)
-		binary.LittleEndian.PutUint64(timestamp, ft)
+	targetInfo := cm.TargetInfo
+
+	cbt, err := computeChannelBindingHash(channelBinding)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute channel binding token: %w", err)
 	}
 
-	clientChallenge := make([]byte, 8)
-	rand.Reader.Read(clientChallenge)
+	targetInfo, serverTimestamp := updateTargetInfoAvPairs(targetInfo, cbt, spn)
 
-	ntlmV2Hash := getNtlmV2Hash(password, user, cm.TargetName)
+	timestamp := getTimestamp(serverTimestamp)
 
-	am.NtChallengeResponse = computeNtlmV2Response(ntlmV2Hash,
-		cm.ServerChallenge[:], clientChallenge, timestamp, cm.TargetInfoRaw)
+	ntlmV2Hash := getNtlmV2Hash(password, am.UserName, am.TargetName)
+
+	clientChallenge := getClientChallenge()
+
+	targetInfoData, err := targetInfo.marshal()
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal TargetInfo AvPair struct: %w", err)
+	}
+
+	NtChallengeResponse, sessionKey := computeNtlmV2Response(ntlmV2Hash,
+		cm.ServerChallenge[:], clientChallenge, timestamp, targetInfoData)
+	am.NtChallengeResponse = NtChallengeResponse
 
 	if cm.TargetInfoRaw == nil {
 		am.LmChallengeResponse = computeLmV2Response(ntlmV2Hash,
 			cm.ServerChallenge[:], clientChallenge)
-	}
-	return am.MarshalBinary()
-}
-
-func ProcessChallengeWithHash(challengeMessageData []byte, user, hash string) ([]byte, error) {
-	if user == "" && hash == "" {
-		return nil, errors.New("Anonymous authentication not supported")
+	} else {
+		am.LmChallengeResponse = make([]byte, 24)
 	}
 
-	var cm challengeMessage
-	if err := cm.UnmarshalBinary(challengeMessageData); err != nil {
-		return nil, err
-	}
-
-	if cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATELMKEY) {
-		return nil, errors.New("Only NTLM v2 is supported, but server requested v1 (NTLMSSP_NEGOTIATE_LM_KEY)")
-	}
-	if cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEKEYEXCH) {
-		return nil, errors.New("Key exchange requested but not supported (NTLMSSP_NEGOTIATE_KEY_EXCH)")
-	}
-
-	am := authenicateMessage{
-		UserName:       user,
-		TargetName:     cm.TargetName,
-		NegotiateFlags: cm.NegotiateFlags,
-	}
-
-	timestamp := cm.TargetInfo[avIDMsvAvTimestamp]
-	if timestamp == nil { // no time sent, take current time
-		ft := uint64(time.Now().UnixNano()) / 100
-		ft += 116444736000000000 // add time between unix & windows offset
-		timestamp = make([]byte, 8)
-		binary.LittleEndian.PutUint64(timestamp, ft)
-	}
-
-	clientChallenge := make([]byte, 8)
-	rand.Reader.Read(clientChallenge)
-
-	hashParts := strings.Split(hash, ":")
-	if len(hashParts) > 1 {
-		hash = hashParts[1]
-	}
-	hashBytes, err := hex.DecodeString(hash)
+	authenticateMessageData, err := am.MarshalBinary()
 	if err != nil {
 		return nil, err
 	}
-	ntlmV2Hash := hmacMd5(hashBytes, toUnicode(strings.ToUpper(user)+cm.TargetName))
 
-	am.NtChallengeResponse = computeNtlmV2Response(ntlmV2Hash,
-		cm.ServerChallenge[:], clientChallenge, timestamp, cm.TargetInfoRaw)
+	mic := computeMIC(sessionKey, negotiateMessageData, challengeMessageData, authenticateMessageData)
+	copy(authenticateMessageData[micFieldOffset:micFieldOffset+micFieldLength], mic)
 
-	if cm.TargetInfoRaw == nil {
-		am.LmChallengeResponse = computeLmV2Response(ntlmV2Hash,
-			cm.ServerChallenge[:], clientChallenge)
+	return authenticateMessageData, nil
+}
+
+func getTimestamp(serverTimestamp []byte) []byte {
+	if serverTimestamp != nil { // no time sent, take current time
+		return serverTimestamp
+	} else {
+		// Prepares current timestamp in format specified in
+		// [MS-NLMP](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-nlmp/83f5e789-660d-4781-8491-5f8c6641f75e)
+		// A FILETIME structure ([MS-DTYP] section 2.3.3) in little-endian byte order that contains the server local
+		// time. This structure is always sent in the CHALLENGE_MESSAGE.
+		ft := uint64(time.Now().UnixNano()) / 100
+		ft += 116444736000000000 // add time between unix & windows offset
+		timestamp := make([]byte, 8)
+		binary.LittleEndian.PutUint64(timestamp, ft)
+		return timestamp
 	}
-	return am.MarshalBinary()
+}
+
+func getClientChallenge() []byte {
+	clientChallenge := make([]byte, 8)
+	rand.Reader.Read(clientChallenge)
+	return clientChallenge
+}
+
+func updateTargetInfoAvPairs(targetInfo AvPairs, channelBindingHash []byte, spn string) (AvPairs, []byte) {
+
+	serverTimestamp := targetInfo[avIDMsvAvTimestamp]
+
+	// update AvFlags - MIC present
+	{
+		flags := targetInfo[avIDMsvAvFlags]
+		if flags == nil {
+			flags = make([]byte, 4)
+			targetInfo[avIDMsvAvFlags] = flags
+		}
+		avFlags := AvFlags(binary.LittleEndian.Uint32(flags))
+		avFlags.Set(AvFlagMICPresent)
+		binary.LittleEndian.PutUint32(flags, uint32(avFlags))
+	}
+
+	// EPA support
+	{
+		targetInfo[avIDMsvChannelBindings] = channelBindingHash
+		targetInfo[avIDMsvAvTargetName] = toUnicode(spn)
+	}
+
+	return targetInfo, serverTimestamp
 }

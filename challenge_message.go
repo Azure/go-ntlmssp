@@ -9,7 +9,7 @@ import (
 type challengeMessageFields struct {
 	messageHeader
 	TargetName      varField
-	NegotiateFlags  negotiateFlags
+	NegotiateFlags  NegotiateFlags
 	ServerChallenge [8]byte
 	_               [8]byte
 	TargetInfo      varField
@@ -22,7 +22,7 @@ func (m challengeMessageFields) IsValid() bool {
 type challengeMessage struct {
 	challengeMessageFields
 	TargetName    string
-	TargetInfo    map[avID][]byte
+	TargetInfo    AvPairs
 	TargetInfoRaw []byte
 }
 
@@ -49,33 +49,15 @@ func (m *challengeMessage) UnmarshalBinary(data []byte) error {
 		if err != nil {
 			return err
 		}
-		m.TargetInfo = make(map[avID][]byte)
-		r := bytes.NewReader(d)
-		for {
-			var id avID
-			var l uint16
-			err = binary.Read(r, binary.LittleEndian, &id)
-			if err != nil {
-				return err
-			}
-			if id == avIDMsvAvEOL {
-				break
-			}
 
-			err = binary.Read(r, binary.LittleEndian, &l)
-			if err != nil {
-				return err
-			}
-			value := make([]byte, l)
-			n, err := r.Read(value)
-			if err != nil {
-				return err
-			}
-			if n != int(l) {
-				return fmt.Errorf("Expected to read %d bytes, got only %d", l, n)
-			}
-			m.TargetInfo[id] = value
+		targetInfo := NewAvPairs()
+		err = targetInfo.unmarshal(d)
+		if err != nil {
+			return err
 		}
+
+		m.TargetInfo = targetInfo
+
 	}
 
 	return nil

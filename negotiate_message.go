@@ -11,19 +11,13 @@ const expMsgBodyLen = 40
 
 type negotiateMessageFields struct {
 	messageHeader
-	NegotiateFlags negotiateFlags
+	NegotiateFlags NegotiateFlags
 
 	Domain      varField
 	Workstation varField
 
 	Version
 }
-
-var defaultFlags = negotiateFlagNTLMSSPNEGOTIATETARGETINFO |
-	negotiateFlagNTLMSSPNEGOTIATE56 |
-	negotiateFlagNTLMSSPNEGOTIATE128 |
-	negotiateFlagNTLMSSPNEGOTIATEUNICODE |
-	negotiateFlagNTLMSSPNEGOTIATEEXTENDEDSESSIONSECURITY
 
 //NewNegotiateMessage creates a new NEGOTIATE message with the
 //flags that this package supports.
@@ -39,12 +33,17 @@ func NewNegotiateMessage(domainName, workstationName string) ([]byte, error) {
 		flags |= negotiateFlagNTLMSSPNEGOTIATEOEMWORKSTATIONSUPPLIED
 	}
 
+	version := EmptyVersion()
+	if flags.Has(negotiateFlagNTLMSSPNEGOTIATEVERSION) {
+		version = DefaultVersion()
+	}
+
 	msg := negotiateMessageFields{
 		messageHeader:  newMessageHeader(1),
 		NegotiateFlags: flags,
 		Domain:         newVarField(&payloadOffset, len(domainName)),
 		Workstation:    newVarField(&payloadOffset, len(workstationName)),
-		Version:        DefaultVersion(),
+		Version:        version,
 	}
 
 	b := bytes.Buffer{}
