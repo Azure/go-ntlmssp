@@ -20,6 +20,13 @@ linters:
       - third_party$
       - builtin$
       - examples$
+      - internal/md4
+    rules:
+      - path: negotiate_flags.go
+        linters:
+          - unused
+      - path: negotiator.go
+        text: "QF1001:"
 formatters:
   enable:
     - gofumpt
@@ -29,3 +36,4 @@ formatters:
       - third_party$
       - builtin$
       - examples$
+      - internal/md4
