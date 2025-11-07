@@ -25,6 +25,8 @@ linters:
       - path: negotiate_flags.go
         linters:
           - unused
+      - path: negotiator.go
+        text: "QF1001:"
 formatters:
   enable:
     - gofumpt
