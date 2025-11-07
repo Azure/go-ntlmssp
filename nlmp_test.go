@@ -49,7 +49,7 @@ func TestUsernameDomainWorkstation(t *testing.T) {
 	}
 
 	for _, table := range tables {
-		tuser, tdomain := GetDomain(table.u)
+		tuser, tdomain, _ := GetDomain(table.u)
 		if tuser != table.xu {
 			t.Fatalf("username not correct, expected %v got %v", tuser, table.xu)
 		}
