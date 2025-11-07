@@ -73,8 +73,8 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	resauth := authheader(res.Header.Values("Www-Authenticate"))
 	if !resauth.IsNegotiate() && !resauth.IsNTLM() {
 		// Unauthorized, Negotiate not requested, let's try with basic auth
-		req.Header.Set("Authorization", string(reqauthBasic))
-		io.Copy(ioutil.Discard, res.Body)
+		req.Header.Set("Authorization", reqauthBasic)
+		_, _ = io.Copy(ioutil.Discard, res.Body)
 		res.Body.Close()
 		req.Body = ioutil.NopCloser(bytes.NewReader(body.Bytes()))
 
@@ -90,7 +90,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 
 	if resauth.IsNegotiate() || resauth.IsNTLM() {
 		// 401 with request:Basic and response:Negotiate
-		io.Copy(ioutil.Discard, res.Body)
+		_, _ = io.Copy(ioutil.Discard, res.Body)
 		res.Body.Close()
 
 		// recycle credentials
@@ -127,11 +127,11 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 		if err != nil {
 			return nil, err
 		}
-		if !(resauth.IsNegotiate() || resauth.IsNTLM()) || len(challengeMessage) == 0 {
+		if (!resauth.IsNegotiate() && !resauth.IsNTLM()) || len(challengeMessage) == 0 {
 			// Negotiation failed, let client deal with response
 			return res, nil
 		}
-		io.Copy(ioutil.Discard, res.Body)
+		_, _ = io.Copy(ioutil.Discard, res.Body)
 		res.Body.Close()
 
 		// send authenticate

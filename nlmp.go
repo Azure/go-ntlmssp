@@ -27,8 +27,8 @@ func getNtlmHash(password string) []byte {
 }
 
 func computeNtlmV2Response(ntlmV2Hash, serverChallenge, clientChallenge,
-	timestamp, targetInfo []byte) []byte {
-
+	timestamp, targetInfo []byte,
+) []byte {
 	temp := []byte{1, 1, 0, 0, 0, 0, 0, 0}
 	temp = append(temp, timestamp...)
 	temp = append(temp, clientChallenge...)
