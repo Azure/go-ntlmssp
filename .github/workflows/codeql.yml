@@ -1,8 +1,7 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 
 name: "CodeQL"
-
 on:
   push:
     branches:
@@ -11,7 +10,7 @@ on:
     branches:
       - "master"
   schedule:
-    - cron: 44 11 * * 0
+    - cron: "44 11 * * 0"
   workflow_dispatch:
 
 jobs:
