@@ -214,8 +214,10 @@ func TestNTLM_E2E(t *testing.T) {
 
 		req.SetBasicAuth(username, password)
 
-		_, err = client.Do(req)
+		resp, err := client.Do(req)
 		if err == nil {
+			// If the request somehow succeeded despite the short timeout, close the body
+			defer resp.Body.Close()
 			t.Error("Expected context cancellation error, but request succeeded")
 		} else {
 			t.Logf("Context cancellation worked as expected: %v", err)
