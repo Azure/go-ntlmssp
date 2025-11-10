@@ -59,13 +59,15 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 			if err != nil {
 				return nil, err
 			}
+			// Close the original body as mandated by http.RoundTripper
+			defer req.Body.Close()
 		} else {
 			// For non-seekable bodies, buffer in memory as required
 			bodyBytes, err := io.ReadAll(req.Body)
+			req.Body.Close()
 			if err != nil {
 				return nil, err
 			}
-			req.Body.Close()
 			body = bytes.NewReader(bodyBytes)
 			bodyStartPos = 0
 		}
