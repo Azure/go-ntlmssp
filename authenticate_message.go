@@ -39,7 +39,7 @@ type authenticateMessageFields struct {
 	NegotiateFlags      negotiateFlags
 }
 
-func (m authenicateMessage) MarshalBinary() ([]byte, error) {
+func (m *authenicateMessage) MarshalBinary() ([]byte, error) {
 	if !m.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEUNICODE) {
 		return nil, errors.New("only unicode is supported")
 	}
