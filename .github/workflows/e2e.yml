@@ -1,0 +1,113 @@
+name: E2E NTLM Tests
+
+on: [push, pull_request]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+jobs:
+  ntlm-e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: [1.24.x, 1.25.x]
+        venv: [windows-2022, windows-2025]
+    name: E2E NTLM Tests (Windows Server)
+    runs-on: ${{ matrix.venv }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Pre-setup IIS Configuration (Windows Server)
+        shell: pwsh
+        run: |
+          Write-Host "Pre-configuring IIS for Windows Server environment..." -ForegroundColor Green
+
+          # Unlock authentication sections that are often locked on Windows Server
+          Write-Host "Unlocking IIS authentication sections..."
+          try {
+            & $env:windir\system32\inetsrv\appcmd.exe unlock config -section:system.webServer/security/authentication/windowsAuthentication
+            & $env:windir\system32\inetsrv\appcmd.exe unlock config -section:system.webServer/security/authentication/anonymousAuthentication
+            Write-Host "Successfully unlocked authentication sections" -ForegroundColor Green
+          } catch {
+            Write-Host "Could not unlock some sections (may already be unlocked): $($_.Exception.Message)" -ForegroundColor Yellow
+          }
+
+      - name: Setup NTLM Test Environment
+        shell: pwsh
+        run: |
+          Write-Host "Setting up NTLM test environment using setup script..." -ForegroundColor Green
+
+          # Run the setup script
+          .\e2e\setup-local-e2e.ps1
+
+          # Set additional environment variables for GitHub Actions
+          Write-Output "NTLM_TEST_USER=ntlmtestuser" >> $env:GITHUB_ENV
+          Write-Output "NTLM_TEST_PASSWORD=TestPass123!" >> $env:GITHUB_ENV
+          Write-Output "NTLM_TEST_DOMAIN=$env:COMPUTERNAME" >> $env:GITHUB_ENV
+          Write-Output "NTLM_TEST_URL=http://localhost:8080/" >> $env:GITHUB_ENV
+
+          Write-Host "Environment variables set for GitHub Actions" -ForegroundColor Green
+
+      - name: Test IIS Setup
+        shell: pwsh
+        run: |
+          # Import WebAdministration module
+          Import-Module WebAdministration -Force
+
+          # Test that IIS is responding
+          try {
+              $response = Invoke-WebRequest -Uri "http://localhost:8080" -UseBasicParsing -TimeoutSec 10
+              Write-Host "IIS responded with status: $($response.StatusCode)"
+          } catch {
+              Write-Host "IIS test failed (expected - requires auth): $($_.Exception.Message)"
+              
+              # Check if it's a 401 (which is expected)
+              if ($_.Exception.Response.StatusCode -eq 401) {
+                  Write-Host "IIS correctly requires authentication"
+              } else {
+                  Write-Error "Unexpected error from IIS"
+                  throw
+              }
+          }
+
+          # Show IIS logs for debugging
+          Write-Host "`n=== IIS Site Configuration ==="
+          try {
+              Get-Website -Name "ntlmtest" | Format-List
+          } catch {
+              Write-Host "Could not retrieve website info: $($_.Exception.Message)"
+          }
+
+          Write-Host "`n=== Application Pool Status ==="
+          try {
+              Get-WebAppPool | Where-Object { $_.Name -eq "DefaultAppPool" } | Format-List
+          } catch {
+              Write-Host "Could not retrieve app pool info: $($_.Exception.Message)"
+          }
+
+      - name: Run Go E2E NTLM tests
+        shell: pwsh
+        run: |
+          Write-Host "Running E2E NTLM tests..."
+          Write-Host "Test URL: $env:NTLM_TEST_URL"
+          Write-Host "Test User: $env:NTLM_TEST_USER"
+          Write-Host "Test Domain: $env:NTLM_TEST_DOMAIN"
+
+          # Set Go environment
+          $env:CGO_ENABLED = "0"
+          $env:GOOS = "windows"
+
+          # Run the E2E tests
+          go test -v -tags=e2e ./e2e -timeout 5m
+
+      - name: Cleanup Test Environment
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "Cleaning up test environment using cleanup script..." -ForegroundColor Yellow
+          .\e2e\cleanup-e2e.ps1
