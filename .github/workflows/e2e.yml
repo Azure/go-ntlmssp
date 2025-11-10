@@ -13,7 +13,6 @@ jobs:
       matrix:
         go-version: [1.24.x, 1.25.x]
         venv: [windows-2022, windows-2025]
-    name: E2E NTLM Tests (Windows Server)
     runs-on: ${{ matrix.venv }}
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -80,7 +79,7 @@ jobs:
           Write-Host "Test Domain: $env:NTLM_TEST_DOMAIN"
 
           # Run the E2E tests
-          go test -v -tags=e2e ./e2e -timeout 5m
+          go test -v -timeout 5m
 
       - name: Cleanup Test Environment
         if: always()

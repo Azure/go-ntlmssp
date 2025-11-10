@@ -49,11 +49,10 @@ func TestNTLM_E2E(t *testing.T) {
 			Transport: Negotiator{
 				RoundTripper: &http.Transport{},
 			},
-			Timeout: 30 * time.Second,
 		}
 
-		// Create request with credentials
-		req, err := http.NewRequest("GET", testURL, nil)
+		// Create request with credentials using test context
+		req, err := http.NewRequestWithContext(t.Context(), "GET", testURL, nil)
 		if err != nil {
 			t.Fatalf("Failed to create request: %v", err)
 		}
@@ -102,10 +101,9 @@ func TestNTLM_E2E(t *testing.T) {
 			Transport: Negotiator{
 				RoundTripper: &http.Transport{},
 			},
-			Timeout: 30 * time.Second,
 		}
 
-		req, err := http.NewRequest("GET", testURL, nil)
+		req, err := http.NewRequestWithContext(t.Context(), "GET", testURL, nil)
 		if err != nil {
 			t.Fatalf("Failed to create request: %v", err)
 		}
@@ -143,10 +141,9 @@ func TestNTLM_E2E(t *testing.T) {
 			Transport: Negotiator{
 				RoundTripper: &http.Transport{},
 			},
-			Timeout: 30 * time.Second,
 		}
 
-		req, err := http.NewRequest("GET", testURL, nil)
+		req, err := http.NewRequestWithContext(t.Context(), "GET", testURL, nil)
 		if err != nil {
 			t.Fatalf("Failed to create request: %v", err)
 		}
@@ -171,11 +168,9 @@ func TestNTLM_E2E(t *testing.T) {
 
 	// Test 4: Test server accessibility (without auth)
 	t.Run("ServerAccessibility", func(t *testing.T) {
-		client := &http.Client{
-			Timeout: 10 * time.Second,
-		}
+		client := &http.Client{}
 
-		req, err := http.NewRequest("GET", testURL, nil)
+		req, err := http.NewRequestWithContext(t.Context(), "GET", testURL, nil)
 		if err != nil {
 			t.Fatalf("Failed to create request: %v", err)
 		}
@@ -202,7 +197,7 @@ func TestNTLM_E2E(t *testing.T) {
 			},
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+		ctx, cancel := context.WithTimeout(t.Context(), 1*time.Millisecond)
 		defer cancel()
 
 		req, err := http.NewRequestWithContext(ctx, "GET", testURL, nil)
@@ -250,7 +245,7 @@ func TestNTLM_E2E_ProcessChallenge(t *testing.T) {
 
 	t.Run("DirectProcessChallenge", func(t *testing.T) {
 		// Step 1: Send negotiate message to get challenge
-		client := &http.Client{Timeout: 10 * time.Second}
+		client := &http.Client{}
 
 		// Create negotiate message
 		negotiateMsg, err := NewNegotiateMessage(domain, "")
@@ -259,7 +254,7 @@ func TestNTLM_E2E_ProcessChallenge(t *testing.T) {
 		}
 
 		// Send negotiate
-		req, err := http.NewRequest("GET", testURL, nil)
+		req, err := http.NewRequestWithContext(t.Context(), "GET", testURL, nil)
 		if err != nil {
 			t.Fatalf("Failed to create request: %v", err)
 		}
@@ -329,10 +324,9 @@ func TestNTLM_E2E_DomainFormats(t *testing.T) {
 			Transport: Negotiator{
 				RoundTripper: &http.Transport{},
 			},
-			Timeout: 30 * time.Second,
 		}
 
-		req, err := http.NewRequest("GET", testURL, nil)
+		req, err := http.NewRequestWithContext(t.Context(), "GET", testURL, nil)
 		if err != nil {
 			t.Fatalf("Failed to create request: %v", err)
 		}
@@ -361,10 +355,9 @@ func TestNTLM_E2E_DomainFormats(t *testing.T) {
 			Transport: Negotiator{
 				RoundTripper: &http.Transport{},
 			},
-			Timeout: 30 * time.Second,
 		}
 
-		req, err := http.NewRequest("GET", testURL, nil)
+		req, err := http.NewRequestWithContext(t.Context(), "GET", testURL, nil)
 		if err != nil {
 			t.Fatalf("Failed to create request: %v", err)
 		}

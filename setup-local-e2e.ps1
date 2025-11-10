@@ -165,9 +165,6 @@ try {
     Write-Host "NTLM_TEST_PASSWORD=$TestPassword" -ForegroundColor Cyan
     Write-Host "NTLM_TEST_DOMAIN=$env:COMPUTERNAME" -ForegroundColor Cyan
 
-    Write-Host "`nTo run E2E tests:" -ForegroundColor Green
-    Write-Host "go test -v -tags=e2e ./e2e -run TestNTLM_E2E" -ForegroundColor Yellow
-
     Write-Host "`nTo cleanup:" -ForegroundColor Green
     Write-Host ".\cleanup-e2e.ps1" -ForegroundColor Yellow
 
