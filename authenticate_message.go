@@ -84,10 +84,22 @@ func (m *authenicateMessage) MarshalBinary() ([]byte, error) {
 }
 
 // ProcessChallenge crafts an AUTHENTICATE message in response to the CHALLENGE message
-// that was received from the server
-func ProcessChallenge(challengeMessageData []byte, user, password string, domainNeeded bool) ([]byte, error) {
+// that was received from the server. The domainNeeded parameter is optional - if not
+// provided, it will be automatically determined based on the username format.
+// This maintains backward compatibility with existing code.
+func ProcessChallenge(challengeMessageData []byte, user, password string, domainNeeded ...bool) ([]byte, error) {
 	if user == "" && password == "" {
 		return nil, errors.New("anonymous authentication not supported")
+	}
+
+	// Determine if domain is needed
+	var needDomain bool
+	if len(domainNeeded) > 0 {
+		// Use explicitly provided value
+		needDomain = domainNeeded[0]
+	} else {
+		// Auto-determine based on username format for backward compatibility
+		_, _, needDomain = GetDomain(user)
 	}
 
 	var cm challengeMessage
@@ -102,7 +114,7 @@ func ProcessChallenge(challengeMessageData []byte, user, password string, domain
 		return nil, errors.New("key exchange requested but not supported (NTLMSSP_NEGOTIATE_KEY_EXCH)")
 	}
 
-	if !domainNeeded {
+	if !needDomain {
 		cm.TargetName = ""
 	}
 
