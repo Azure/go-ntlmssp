@@ -46,16 +46,41 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 		return rt.RoundTrip(req)
 	}
 	reqauthBasic := reqauth.Basic()
-	// Save request body
-	body := bytes.Buffer{}
+	// We need to buffer or seek the request body to handle authentication challenges
+	// that require resending the body multiple times during the NTLM handshake.
+	var body io.ReadSeeker
+	var bodyStartPos int64
 	if req.Body != nil {
-		_, err = body.ReadFrom(req.Body)
-		if err != nil {
-			return nil, err
+		// Check if body is already seekable to avoid buffering large bodies
+		if seeker, ok := req.Body.(io.ReadSeeker); ok {
+			// Remember the current position
+			bodyStartPos, err = seeker.Seek(0, io.SeekCurrent)
+			if err == nil {
+				// Seeking succeeded, use the seekable body directly
+				body = seeker
+				// Close the original body as mandated by http.RoundTripper
+				defer req.Body.Close()
+			} else {
+				// Seeking failed (e.g., pipes), fallback to buffering
+				bodyBytes, err := io.ReadAll(req.Body)
+				req.Body.Close()
+				if err != nil {
+					return nil, err
+				}
+				body = bytes.NewReader(bodyBytes)
+				bodyStartPos = 0
+			}
+		} else {
+			// For non-seekable bodies, buffer in memory as required
+			bodyBytes, err := io.ReadAll(req.Body)
+			req.Body.Close()
+			if err != nil {
+				return nil, err
+			}
+			body = bytes.NewReader(bodyBytes)
+			bodyStartPos = 0
 		}
-
-		req.Body.Close()
-		req.Body = io.NopCloser(bytes.NewReader(body.Bytes()))
+		req.Body = io.NopCloser(body)
 	}
 	// first try anonymous, in case the server still finds us
 	// authenticated from previous traffic
@@ -73,7 +98,13 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 		req.Header.Set("Authorization", reqauthBasic)
 		_, _ = io.Copy(io.Discard, res.Body)
 		res.Body.Close()
-		req.Body = io.NopCloser(bytes.NewReader(body.Bytes()))
+		if body != nil {
+			_, err = body.Seek(bodyStartPos, io.SeekStart)
+			if err != nil {
+				return nil, err
+			}
+			req.Body = io.NopCloser(body)
+		}
 
 		res, err = rt.RoundTrip(req)
 		if err != nil {
@@ -111,7 +142,13 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 			req.Header.Set("Authorization", "Negotiate "+base64.StdEncoding.EncodeToString(negotiateMessage))
 		}
 
-		req.Body = io.NopCloser(bytes.NewReader(body.Bytes()))
+		if body != nil {
+			_, err = body.Seek(bodyStartPos, io.SeekStart)
+			if err != nil {
+				return nil, err
+			}
+			req.Body = io.NopCloser(body)
+		}
 
 		res, err = rt.RoundTrip(req)
 		if err != nil {
@@ -142,7 +179,13 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 			req.Header.Set("Authorization", "Negotiate "+base64.StdEncoding.EncodeToString(authenticateMessage))
 		}
 
-		req.Body = io.NopCloser(bytes.NewReader(body.Bytes()))
+		if body != nil {
+			_, err = body.Seek(bodyStartPos, io.SeekStart)
+			if err != nil {
+				return nil, err
+			}
+			req.Body = io.NopCloser(body)
+		}
 
 		return rt.RoundTrip(req)
 	}
