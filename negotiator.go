@@ -46,28 +46,27 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 		return rt.RoundTrip(req)
 	}
 	reqauthBasic := reqauth.Basic()
-	// Save request body
-	var body bytes.Buffer
+	// Save request body as a seekable reader to avoid duplication
 	var bodySeeker io.ReadSeeker
 	if req.Body != nil {
-		// Check if body is seekable to avoid buffering large bodies
+		// Check if body is already seekable to avoid buffering large bodies
 		if seeker, ok := req.Body.(io.ReadSeeker); ok {
 			bodySeeker = seeker
-			// Ensure we're at the start of the seekable body
-			_, err = bodySeeker.Seek(0, io.SeekStart)
-			if err != nil {
-				return nil, err
-			}
-			req.Body = io.NopCloser(bodySeeker)
 		} else {
 			// For non-seekable bodies, buffer in memory (backward compatibility)
-			_, err = body.ReadFrom(req.Body)
+			bodyBytes, err := io.ReadAll(req.Body)
 			if err != nil {
 				return nil, err
 			}
 			req.Body.Close()
-			req.Body = io.NopCloser(bytes.NewReader(body.Bytes()))
+			bodySeeker = bytes.NewReader(bodyBytes)
 		}
+		// Ensure we're at the start of the seekable body
+		_, err = bodySeeker.Seek(0, io.SeekStart)
+		if err != nil {
+			return nil, err
+		}
+		req.Body = io.NopCloser(bodySeeker)
 	}
 	// first try anonymous, in case the server still finds us
 	// authenticated from previous traffic
@@ -91,8 +90,6 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 				return nil, err
 			}
 			req.Body = io.NopCloser(bodySeeker)
-		} else {
-			req.Body = io.NopCloser(bytes.NewReader(body.Bytes()))
 		}
 
 		res, err = rt.RoundTrip(req)
@@ -137,8 +134,6 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 				return nil, err
 			}
 			req.Body = io.NopCloser(bodySeeker)
-		} else {
-			req.Body = io.NopCloser(bytes.NewReader(body.Bytes()))
 		}
 
 		res, err = rt.RoundTrip(req)
@@ -176,8 +171,6 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 				return nil, err
 			}
 			req.Body = io.NopCloser(bodySeeker)
-		} else {
-			req.Body = io.NopCloser(bytes.NewReader(body.Bytes()))
 		}
 
 		return rt.RoundTrip(req)
