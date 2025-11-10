@@ -25,37 +25,29 @@ jobs:
       - name: Pre-setup IIS Configuration (Windows Server)
         shell: pwsh
         run: |
-          Write-Host "Pre-configuring IIS for Windows Server environment..." -ForegroundColor Green
-
           # Unlock authentication sections that are often locked on Windows Server
           Write-Host "Unlocking IIS authentication sections..."
-          try {
-            & $env:windir\system32\inetsrv\appcmd.exe unlock config -section:system.webServer/security/authentication/windowsAuthentication
-            & $env:windir\system32\inetsrv\appcmd.exe unlock config -section:system.webServer/security/authentication/anonymousAuthentication
-            Write-Host "Successfully unlocked authentication sections" -ForegroundColor Green
-          } catch {
-            Write-Host "Could not unlock some sections (may already be unlocked): $($_.Exception.Message)" -ForegroundColor Yellow
-          }
+          & $env:windir\system32\inetsrv\appcmd.exe unlock config -section:system.webServer/security/authentication/windowsAuthentication
+          & $env:windir\system32\inetsrv\appcmd.exe unlock config -section:system.webServer/security/authentication/anonymousAuthentication
+          Write-Host "Successfully unlocked authentication sections"
 
       - name: Setup NTLM Test Environment
         shell: pwsh
         run: |
-          Write-Host "Setting up NTLM test environment using setup script..." -ForegroundColor Green
+          Write-Host "Setting up NTLM test environment using setup script..."
 
           # Generate a random password for this test run
           $randomPassword = -join ((65..90) + (97..122) + (48..57) + @(33,35,36,37,38,42,43,45,61,63,64) | Get-Random -Count 16 | % {[char]$_})
-          Write-Host "Generated random test password" -ForegroundColor Green
+          Write-Host "Generated random test password"
 
           # Run the setup script with random password
-          .\e2e\setup-local-e2e.ps1 -TestPassword $randomPassword
+          .\setup-local-e2e.ps1 -TestPassword $randomPassword
 
           # Set additional environment variables for GitHub Actions
           Write-Output "NTLM_TEST_USER=ntlmtestuser" >> $env:GITHUB_ENV
           Write-Output "NTLM_TEST_PASSWORD=$randomPassword" >> $env:GITHUB_ENV
           Write-Output "NTLM_TEST_DOMAIN=$env:COMPUTERNAME" >> $env:GITHUB_ENV
           Write-Output "NTLM_TEST_URL=http://localhost:8080/" >> $env:GITHUB_ENV
-
-          Write-Host "Environment variables set for GitHub Actions" -ForegroundColor Green
 
       - name: Test IIS Setup
         shell: pwsh
@@ -79,21 +71,6 @@ jobs:
               }
           }
 
-          # Show IIS logs for debugging
-          Write-Host "`n=== IIS Site Configuration ==="
-          try {
-              Get-Website -Name "ntlmtest" | Format-List
-          } catch {
-              Write-Host "Could not retrieve website info: $($_.Exception.Message)"
-          }
-
-          Write-Host "`n=== Application Pool Status ==="
-          try {
-              Get-WebAppPool | Where-Object { $_.Name -eq "DefaultAppPool" } | Format-List
-          } catch {
-              Write-Host "Could not retrieve app pool info: $($_.Exception.Message)"
-          }
-
       - name: Run Go E2E NTLM tests
         shell: pwsh
         run: |
@@ -108,6 +85,4 @@ jobs:
       - name: Cleanup Test Environment
         if: always()
         shell: pwsh
-        run: |
-          Write-Host "Cleaning up test environment using cleanup script..." -ForegroundColor Yellow
-          .\e2e\cleanup-e2e.ps1
+        run: .\cleanup-e2e.ps1

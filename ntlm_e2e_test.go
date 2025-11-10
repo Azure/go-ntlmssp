@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-package e2e
+package ntlmssp
 
 import (
 	"context"
@@ -12,8 +12,6 @@ import (
 	"os"
 	"testing"
 	"time"
-
-	"github.com/Azure/go-ntlmssp"
 )
 
 // TestNTLM_E2E tests NTLM authentication against a real IIS server with Windows Authentication enabled
@@ -48,7 +46,7 @@ func TestNTLM_E2E(t *testing.T) {
 	// Test 1: Basic NTLM authentication should succeed
 	t.Run("BasicNTLMAuth", func(t *testing.T) {
 		client := &http.Client{
-			Transport: ntlmssp.Negotiator{
+			Transport: Negotiator{
 				RoundTripper: &http.Transport{},
 			},
 			Timeout: 30 * time.Second,
@@ -101,7 +99,7 @@ func TestNTLM_E2E(t *testing.T) {
 		}
 
 		client := &http.Client{
-			Transport: ntlmssp.Negotiator{
+			Transport: Negotiator{
 				RoundTripper: &http.Transport{},
 			},
 			Timeout: 30 * time.Second,
@@ -142,7 +140,7 @@ func TestNTLM_E2E(t *testing.T) {
 	// Test 3: Test authentication failure with wrong credentials
 	t.Run("AuthenticationFailure", func(t *testing.T) {
 		client := &http.Client{
-			Transport: ntlmssp.Negotiator{
+			Transport: Negotiator{
 				RoundTripper: &http.Transport{},
 			},
 			Timeout: 30 * time.Second,
@@ -199,7 +197,7 @@ func TestNTLM_E2E(t *testing.T) {
 	// Test 5: Test with context cancellation
 	t.Run("ContextCancellation", func(t *testing.T) {
 		client := &http.Client{
-			Transport: ntlmssp.Negotiator{
+			Transport: Negotiator{
 				RoundTripper: &http.Transport{},
 			},
 		}
@@ -255,7 +253,7 @@ func TestNTLM_E2E_ProcessChallenge(t *testing.T) {
 		client := &http.Client{Timeout: 10 * time.Second}
 
 		// Create negotiate message
-		negotiateMsg, err := ntlmssp.NewNegotiateMessage(domain, "")
+		negotiateMsg, err := NewNegotiateMessage(domain, "")
 		if err != nil {
 			t.Fatalf("Failed to create negotiate message: %v", err)
 		}
@@ -328,7 +326,7 @@ func TestNTLM_E2E_DomainFormats(t *testing.T) {
 		}
 
 		client := &http.Client{
-			Transport: ntlmssp.Negotiator{
+			Transport: Negotiator{
 				RoundTripper: &http.Transport{},
 			},
 			Timeout: 30 * time.Second,
@@ -360,7 +358,7 @@ func TestNTLM_E2E_DomainFormats(t *testing.T) {
 
 	t.Run("PlainUsernameAuth", func(t *testing.T) {
 		client := &http.Client{
-			Transport: ntlmssp.Negotiator{
+			Transport: Negotiator{
 				RoundTripper: &http.Transport{},
 			},
 			Timeout: 30 * time.Second,
