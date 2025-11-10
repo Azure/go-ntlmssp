@@ -46,27 +46,30 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 		return rt.RoundTrip(req)
 	}
 	reqauthBasic := reqauth.Basic()
-	// Save request body as a seekable reader to avoid duplication
-	var bodySeeker io.ReadSeeker
+	// We need to buffer or seek the request body to handle authentication challenges
+	// that require resending the body multiple times during the NTLM handshake.
+	var body io.ReadSeeker
+	var bodyStartPos int64
 	if req.Body != nil {
 		// Check if body is already seekable to avoid buffering large bodies
 		if seeker, ok := req.Body.(io.ReadSeeker); ok {
-			bodySeeker = seeker
+			body = seeker
+			// Remember the current position to maintain backwards compatibility
+			bodyStartPos, err = seeker.Seek(0, io.SeekCurrent)
+			if err != nil {
+				return nil, err
+			}
 		} else {
-			// For non-seekable bodies, buffer in memory (backward compatibility)
+			// For non-seekable bodies, buffer in memory as required
 			bodyBytes, err := io.ReadAll(req.Body)
 			if err != nil {
 				return nil, err
 			}
 			req.Body.Close()
-			bodySeeker = bytes.NewReader(bodyBytes)
+			body = bytes.NewReader(bodyBytes)
+			bodyStartPos = 0
 		}
-		// Ensure we're at the start of the seekable body
-		_, err = bodySeeker.Seek(0, io.SeekStart)
-		if err != nil {
-			return nil, err
-		}
-		req.Body = io.NopCloser(bodySeeker)
+		req.Body = io.NopCloser(body)
 	}
 	// first try anonymous, in case the server still finds us
 	// authenticated from previous traffic
@@ -84,12 +87,12 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 		req.Header.Set("Authorization", reqauthBasic)
 		_, _ = io.Copy(io.Discard, res.Body)
 		res.Body.Close()
-		if bodySeeker != nil {
-			_, err = bodySeeker.Seek(0, io.SeekStart)
+		if body != nil {
+			_, err = body.Seek(bodyStartPos, io.SeekStart)
 			if err != nil {
 				return nil, err
 			}
-			req.Body = io.NopCloser(bodySeeker)
+			req.Body = io.NopCloser(body)
 		}
 
 		res, err = rt.RoundTrip(req)
@@ -128,12 +131,12 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 			req.Header.Set("Authorization", "Negotiate "+base64.StdEncoding.EncodeToString(negotiateMessage))
 		}
 
-		if bodySeeker != nil {
-			_, err = bodySeeker.Seek(0, io.SeekStart)
+		if body != nil {
+			_, err = body.Seek(bodyStartPos, io.SeekStart)
 			if err != nil {
 				return nil, err
 			}
-			req.Body = io.NopCloser(bodySeeker)
+			req.Body = io.NopCloser(body)
 		}
 
 		res, err = rt.RoundTrip(req)
@@ -165,12 +168,12 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 			req.Header.Set("Authorization", "Negotiate "+base64.StdEncoding.EncodeToString(authenticateMessage))
 		}
 
-		if bodySeeker != nil {
-			_, err = bodySeeker.Seek(0, io.SeekStart)
+		if body != nil {
+			_, err = body.Seek(bodyStartPos, io.SeekStart)
 			if err != nil {
 				return nil, err
 			}
-			req.Body = io.NopCloser(bodySeeker)
+			req.Body = io.NopCloser(body)
 		}
 
 		return rt.RoundTrip(req)
