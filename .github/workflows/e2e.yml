@@ -40,7 +40,7 @@ jobs:
           Write-Host "Generated random test password"
 
           # Run the setup script with random password
-          .\setup-local-e2e.ps1 -TestPassword $randomPassword
+          .\scripts\setup-local-e2e.ps1 -TestPassword $randomPassword
 
           # Set additional environment variables for GitHub Actions
           Write-Output "NTLM_TEST_USER=ntlmtestuser" >> $env:GITHUB_ENV
@@ -84,4 +84,4 @@ jobs:
       - name: Cleanup Test Environment
         if: always()
         shell: pwsh
-        run: .\cleanup-e2e.ps1
+        run: .\scripts\cleanup-e2e.ps1
