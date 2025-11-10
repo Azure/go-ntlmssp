@@ -1,0 +1,87 @@
+name: E2E NTLM Tests
+
+on: [push, pull_request]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+jobs:
+  ntlm-e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: [1.24.x, 1.25.x]
+        venv: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.venv }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Pre-setup IIS Configuration (Windows Server)
+        shell: pwsh
+        run: |
+          # Unlock authentication sections that are often locked on Windows Server
+          Write-Host "Unlocking IIS authentication sections..."
+          & $env:windir\system32\inetsrv\appcmd.exe unlock config -section:system.webServer/security/authentication/windowsAuthentication
+          & $env:windir\system32\inetsrv\appcmd.exe unlock config -section:system.webServer/security/authentication/anonymousAuthentication
+          Write-Host "Successfully unlocked authentication sections"
+
+      - name: Setup NTLM Test Environment
+        shell: pwsh
+        run: |
+          Write-Host "Setting up NTLM test environment using setup script..."
+
+          # Generate a random password for this test run
+          $randomPassword = -join ((65..90) + (97..122) + (48..57) + @(33,35,36,37,38,42,43,45,61,63,64) | Get-Random -Count 16 | % {[char]$_})
+          Write-Host "Generated random test password"
+
+          # Run the setup script with random password
+          .\scripts\setup-local-e2e.ps1 -TestPassword $randomPassword
+
+          # Set additional environment variables for GitHub Actions
+          Write-Output "NTLM_TEST_USER=ntlmtestuser" >> $env:GITHUB_ENV
+          Write-Output "NTLM_TEST_PASSWORD=$randomPassword" >> $env:GITHUB_ENV
+          Write-Output "NTLM_TEST_DOMAIN=$env:COMPUTERNAME" >> $env:GITHUB_ENV
+          Write-Output "NTLM_TEST_URL=http://localhost:8080/" >> $env:GITHUB_ENV
+
+      - name: Test IIS Setup
+        shell: pwsh
+        run: |
+          # Import WebAdministration module
+          Import-Module WebAdministration -Force
+
+          # Test that IIS is responding
+          try {
+              $response = Invoke-WebRequest -Uri "http://localhost:8080" -UseBasicParsing -TimeoutSec 10
+              Write-Host "IIS responded with status: $($response.StatusCode)"
+          } catch {
+              Write-Host "IIS test failed (expected - requires auth): $($_.Exception.Message)"
+              
+              # Check if it's a 401 (which is expected)
+              if ($_.Exception.Response.StatusCode -eq 401) {
+                  Write-Host "IIS correctly requires authentication"
+              } else {
+                  Write-Error "Unexpected error from IIS"
+                  throw
+              }
+          }
+
+      - name: Run Go E2E NTLM tests
+        shell: pwsh
+        run: |
+          Write-Host "Running E2E NTLM tests..."
+          Write-Host "Test URL: $env:NTLM_TEST_URL"
+          Write-Host "Test User: $env:NTLM_TEST_USER"
+          Write-Host "Test Domain: $env:NTLM_TEST_DOMAIN"
+
+          # Run the E2E tests
+          go test -v -timeout 5m
+
+      - name: Cleanup Test Environment
+        if: always()
+        shell: pwsh
+        run: .\scripts\cleanup-e2e.ps1
