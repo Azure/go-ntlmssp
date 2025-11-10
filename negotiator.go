@@ -45,6 +45,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	if !reqauth.IsBasic() {
 		return rt.RoundTrip(req)
 	}
+	req = req.Clone(req.Context())
 	reqauthBasic := reqauth.Basic()
 	// We need to buffer or seek the request body to handle authentication challenges
 	// that require resending the body multiple times during the NTLM handshake.
