@@ -53,14 +53,23 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	if req.Body != nil {
 		// Check if body is already seekable to avoid buffering large bodies
 		if seeker, ok := req.Body.(io.ReadSeeker); ok {
-			body = seeker
 			// Remember the current position
 			bodyStartPos, err = seeker.Seek(0, io.SeekCurrent)
-			if err != nil {
-				return nil, err
+			if err == nil {
+				// Seeking succeeded, use the seekable body directly
+				body = seeker
+				// Close the original body as mandated by http.RoundTripper
+				defer req.Body.Close()
+			} else {
+				// Seeking failed (e.g., pipes), fallback to buffering
+				bodyBytes, err := io.ReadAll(req.Body)
+				req.Body.Close()
+				if err != nil {
+					return nil, err
+				}
+				body = bytes.NewReader(bodyBytes)
+				bodyStartPos = 0
 			}
-			// Close the original body as mandated by http.RoundTripper
-			defer req.Body.Close()
 		} else {
 			// For non-seekable bodies, buffer in memory as required
 			bodyBytes, err := io.ReadAll(req.Body)
