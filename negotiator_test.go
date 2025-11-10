@@ -102,6 +102,69 @@ func TestNegotiatorWithSeekableBody(t *testing.T) {
 	}
 }
 
+// TestNegotiatorWithPartialSeekableBody tests that seekable bodies starting at non-zero position work correctly
+func TestNegotiatorWithPartialSeekableBody(t *testing.T) {
+	fullData := []byte("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+	// Simulate a partial read starting at position 10
+	startPos := int64(10)
+	expectedData := fullData[startPos:]
+
+	// Create a seekable reader and position it at startPos
+	bodyReader := bytes.NewReader(fullData)
+	_, err := bodyReader.Seek(startPos, io.SeekStart)
+	if err != nil {
+		t.Fatalf("Failed to seek to start position: %v", err)
+	}
+
+	// Create a test server that accepts requests without auth
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Read and verify the body was sent correctly from the offset position
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("Failed to read body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if !bytes.Equal(body, expectedData) {
+			t.Errorf("Body mismatch: expected %q, got %q", expectedData, body)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	// Create a request with basic auth
+	req, err := http.NewRequest("POST", server.URL, io.NopCloser(bodyReader))
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.SetBasicAuth("testuser", "testpass")
+
+	// Create client with NTLM negotiator
+	client := &http.Client{
+		Transport: Negotiator{
+			RoundTripper: http.DefaultTransport,
+		},
+	}
+
+	// Make the request
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response: %v", err)
+	}
+
+	if string(respBody) != "ok" {
+		t.Errorf("Expected 'ok', got '%s'", string(respBody))
+	}
+}
+
 // TestNegotiatorWithNonSeekableBody tests that non-seekable bodies still work (backward compatibility)
 func TestNegotiatorWithNonSeekableBody(t *testing.T) {
 	testData := []byte("test data")

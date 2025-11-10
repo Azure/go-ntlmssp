@@ -54,7 +54,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 		// Check if body is already seekable to avoid buffering large bodies
 		if seeker, ok := req.Body.(io.ReadSeeker); ok {
 			body = seeker
-			// Remember the current position to maintain backwards compatibility
+			// Remember the current position
 			bodyStartPos, err = seeker.Seek(0, io.SeekCurrent)
 			if err != nil {
 				return nil, err
