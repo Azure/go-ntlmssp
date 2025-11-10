@@ -42,12 +42,16 @@ jobs:
         run: |
           Write-Host "Setting up NTLM test environment using setup script..." -ForegroundColor Green
 
-          # Run the setup script
-          .\e2e\setup-local-e2e.ps1
+          # Generate a random password for this test run
+          $randomPassword = -join ((65..90) + (97..122) + (48..57) + @(33,35,36,37,38,42,43,45,61,63,64) | Get-Random -Count 16 | % {[char]$_})
+          Write-Host "Generated random test password" -ForegroundColor Green
+
+          # Run the setup script with random password
+          .\e2e\setup-local-e2e.ps1 -TestPassword $randomPassword
 
           # Set additional environment variables for GitHub Actions
           Write-Output "NTLM_TEST_USER=ntlmtestuser" >> $env:GITHUB_ENV
-          Write-Output "NTLM_TEST_PASSWORD=TestPass123!" >> $env:GITHUB_ENV
+          Write-Output "NTLM_TEST_PASSWORD=$randomPassword" >> $env:GITHUB_ENV
           Write-Output "NTLM_TEST_DOMAIN=$env:COMPUTERNAME" >> $env:GITHUB_ENV
           Write-Output "NTLM_TEST_URL=http://localhost:8080/" >> $env:GITHUB_ENV
 
@@ -97,10 +101,6 @@ jobs:
           Write-Host "Test URL: $env:NTLM_TEST_URL"
           Write-Host "Test User: $env:NTLM_TEST_USER"
           Write-Host "Test Domain: $env:NTLM_TEST_DOMAIN"
-
-          # Set Go environment
-          $env:CGO_ENABLED = "0"
-          $env:GOOS = "windows"
 
           # Run the E2E tests
           go test -v -tags=e2e ./e2e -timeout 5m

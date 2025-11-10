@@ -34,6 +34,8 @@ This directory contains end-to-end tests for the go-ntlmssp library that test ag
    $env:NTLM_TEST_PASSWORD = "your_password" 
    $env:NTLM_TEST_DOMAIN = "your_domain"  # Optional
    ```
+   
+   > **Note**: The setup script automatically generates a random secure password if none is provided. For security, avoid hardcoded passwords in scripts or CI environments.
 
 4. **Run tests:**
    ```bash
@@ -45,9 +47,10 @@ This directory contains end-to-end tests for the go-ntlmssp library that test ag
 The E2E tests run automatically in GitHub Actions on Windows runners. The workflow:
 
 1. Sets up a clean Windows Server environment
-2. Creates a test user account
-3. Configures IIS with Windows Authentication
-4. Runs the E2E tests against the real NTLM server
+2. Generates a random secure password for the test user
+3. Creates a test user account with the random password
+4. Configures IIS with Windows Authentication
+5. Runs the E2E tests against the real NTLM server
 5. Cleans up resources
 
 ## Test Coverage

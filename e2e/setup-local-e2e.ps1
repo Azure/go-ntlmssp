@@ -5,8 +5,14 @@ param(
     [string]$SiteName = "ntlmtest",
     [int]$Port = 8080,
     [string]$TestUser = "ntlmtestuser",
-    [string]$TestPassword = "TestPass123!"
+    [string]$TestPassword = ""
 )
+
+# Generate a random password if none provided
+if ([string]::IsNullOrEmpty($TestPassword)) {
+    $TestPassword = -join ((65..90) + (97..122) + (48..57) + @(33,35,36,37,38,42,43,45,61,63,64) | Get-Random -Count 16 | % {[char]$_})
+    Write-Host "Generated random test password for security" -ForegroundColor Cyan
+}
 
 Write-Host "Setting up local NTLM E2E test environment..." -ForegroundColor Green
 
