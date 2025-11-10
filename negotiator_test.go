@@ -42,7 +42,7 @@ func (sb *seekableBuffer) Close() error {
 // TestNegotiatorWithSeekableBody tests that seekable bodies work correctly
 func TestNegotiatorWithSeekableBody(t *testing.T) {
 	testData := []byte("test data that would be large in real scenarios")
-	
+
 	// Track seek calls to ensure the body is being seeked, not buffered
 	seekCalled := false
 	bodyReader := newSeekableBuffer(testData, &seekCalled)
