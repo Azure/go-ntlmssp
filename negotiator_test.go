@@ -871,3 +871,388 @@ func TestNegotiatorBasicAuthOnly(t *testing.T) {
 		t.Errorf("Expected exactly 2 round trips for Basic auth only, got %d", callCount)
 	}
 }
+
+// failingReadSeeker implements io.ReadSeeker but fails on Seek after being read
+type failingReadSeeker struct {
+	reader     *bytes.Reader
+	failOnNext bool
+}
+
+func (f *failingReadSeeker) Read(p []byte) (n int, err error) {
+	n, err = f.reader.Read(p)
+	if err == nil || err == io.EOF {
+		// After a successful read, mark to fail on next seek
+		f.failOnNext = true
+	}
+	return n, err
+}
+
+func (f *failingReadSeeker) Seek(offset int64, whence int) (int64, error) {
+	if f.failOnNext {
+		// Simulate a seek failure (e.g., the underlying file was closed)
+		return 0, io.ErrUnexpectedEOF
+	}
+	return f.reader.Seek(offset, whence)
+}
+
+func (f *failingReadSeeker) Close() error {
+	return nil
+}
+
+// TestNegotiatorRewindFailureWithBasicAuth tests that when body.rewind() fails
+// during Basic auth flow, the response is returned to the client instead of an error
+func TestNegotiatorRewindFailureWithBasicAuth(t *testing.T) {
+	testData := []byte("test request body")
+	callCount := 0
+
+	// Create a test server that requests Basic auth
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		authHeader := r.Header.Get("Authorization")
+
+		// Read body to trigger body consumption
+		_, _ = io.ReadAll(r.Body)
+
+		if callCount == 1 && authHeader == "" {
+			// First request: no auth, return 401 with Basic auth request
+			w.Header().Set("Www-Authenticate", "Basic realm=\"test\"")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte("basic auth required"))
+		} else {
+			// Should not reach here if rewind fails properly
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("authenticated"))
+		}
+	}))
+	defer server.Close()
+
+	// Create a body that will fail to rewind after being read
+	bodyReader := &failingReadSeeker{reader: bytes.NewReader(testData), failOnNext: false}
+
+	// Create a POST request with the failing body
+	req, err := http.NewRequest("POST", server.URL, bodyReader)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.SetBasicAuth("testuser", "testpass")
+
+	// Create client with NTLM negotiator
+	client := &http.Client{
+		Transport: Negotiator{
+			RoundTripper: http.DefaultTransport,
+		},
+	}
+
+	// Make the request - should return the 401 response when rewind fails
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Request failed with error (expected response): %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Should receive the 401 response since rewind failed
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("Expected status 401 (rewind failed), got %d", resp.StatusCode)
+	}
+
+	// Read response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response: %v", err)
+	}
+
+	if string(respBody) != "basic auth required" {
+		t.Errorf("Expected 'basic auth required', got '%s'", string(respBody))
+	}
+
+	// Should only have made 1 round trip since rewind failed
+	if callCount != 1 {
+		t.Errorf("Expected exactly 1 round trip (rewind failed), got %d", callCount)
+	}
+}
+
+// TestNegotiatorRewindFailureWithNTLM tests that when body.rewind() fails
+// during NTLM negotiation, the response is returned to the client instead of an error
+func TestNegotiatorRewindFailureWithNTLM(t *testing.T) {
+	testData := []byte("test request body")
+	callCount := 0
+
+	// Create a test server that requests NTLM auth
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		authHeader := r.Header.Get("Authorization")
+
+		// Read body to trigger body consumption
+		_, _ = io.ReadAll(r.Body)
+
+		if callCount == 1 && authHeader == "" {
+			// First request: no auth, return 401 with NTLM challenge
+			w.Header().Set("Www-Authenticate", "NTLM")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte("ntlm auth required"))
+		} else {
+			// Should not reach here if rewind fails properly
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("authenticated"))
+		}
+	}))
+	defer server.Close()
+
+	// Create a body that will fail to rewind after being read
+	bodyReader := &failingReadSeeker{reader: bytes.NewReader(testData), failOnNext: false}
+
+	// Create a POST request with the failing body
+	req, err := http.NewRequest("POST", server.URL, bodyReader)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.SetBasicAuth("testuser", "testpass")
+
+	// Create client with NTLM negotiator
+	client := &http.Client{
+		Transport: Negotiator{
+			RoundTripper: http.DefaultTransport,
+		},
+	}
+
+	// Make the request - should return the 401 response when rewind fails
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Request failed with error (expected response): %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Should receive the 401 response since rewind failed
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("Expected status 401 (rewind failed), got %d", resp.StatusCode)
+	}
+
+	// Read response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response: %v", err)
+	}
+
+	if string(respBody) != "ntlm auth required" {
+		t.Errorf("Expected 'ntlm auth required', got '%s'", string(respBody))
+	}
+
+	// Should only have made 1 round trip since rewind failed
+	if callCount != 1 {
+		t.Errorf("Expected exactly 1 round trip (rewind failed), got %d", callCount)
+	}
+}
+
+// TestNegotiatorInvalidChallengeToken tests that when resauth.token() fails
+// to parse the challenge, the response is returned to the client instead of an error
+func TestNegotiatorInvalidChallengeToken(t *testing.T) {
+	callCount := 0
+
+	// Create a test server that sends an invalid NTLM challenge token
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		authHeader := r.Header.Get("Authorization")
+
+		if callCount == 1 {
+			// First request: no auth, return 401 with NTLM
+			w.Header().Set("Www-Authenticate", "NTLM")
+			w.WriteHeader(http.StatusUnauthorized)
+		} else if callCount == 2 && bytes.HasPrefix([]byte(authHeader), []byte("NTLM ")) {
+			// Second request: negotiate message, return invalid challenge token
+			w.Header().Set("Www-Authenticate", "NTLM invalid-base64-token!!!")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte("invalid challenge"))
+		} else {
+			// Should not reach here if token parsing fails properly
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("authenticated"))
+		}
+	}))
+	defer server.Close()
+
+	// Create a GET request
+	req, err := http.NewRequest("GET", server.URL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.SetBasicAuth("testuser", "testpass")
+
+	// Create client with NTLM negotiator
+	client := &http.Client{
+		Transport: Negotiator{
+			RoundTripper: http.DefaultTransport,
+		},
+	}
+
+	// Make the request - should return the 401 response when token parsing fails
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Request failed with error (expected response): %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Should receive the 401 response since token parsing failed
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("Expected status 401 (invalid token), got %d", resp.StatusCode)
+	}
+
+	// Read response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response: %v", err)
+	}
+
+	if string(respBody) != "invalid challenge" {
+		t.Errorf("Expected 'invalid challenge', got '%s'", string(respBody))
+	}
+
+	// Should have made 2 round trips before stopping at invalid token
+	if callCount != 2 {
+		t.Errorf("Expected exactly 2 round trips (stopped at invalid token), got %d", callCount)
+	}
+}
+
+// TestNegotiatorEmptyChallengeToken tests that when the server returns an empty
+// NTLM challenge token, the response is returned to the client
+func TestNegotiatorEmptyChallengeToken(t *testing.T) {
+	callCount := 0
+
+	// Create a test server that sends an empty NTLM challenge token
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		authHeader := r.Header.Get("Authorization")
+
+		if callCount == 1 {
+			// First request: no auth, return 401 with NTLM
+			w.Header().Set("Www-Authenticate", "NTLM")
+			w.WriteHeader(http.StatusUnauthorized)
+		} else if callCount == 2 && bytes.HasPrefix([]byte(authHeader), []byte("NTLM ")) {
+			// Second request: negotiate message, return empty challenge token
+			w.Header().Set("Www-Authenticate", "NTLM")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte("empty challenge"))
+		} else {
+			// Should not reach here if empty token is handled properly
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("authenticated"))
+		}
+	}))
+	defer server.Close()
+
+	// Create a GET request
+	req, err := http.NewRequest("GET", server.URL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.SetBasicAuth("testuser", "testpass")
+
+	// Create client with NTLM negotiator
+	client := &http.Client{
+		Transport: Negotiator{
+			RoundTripper: http.DefaultTransport,
+		},
+	}
+
+	// Make the request - should return the 401 response when challenge is empty
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Request failed with error (expected response): %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Should receive the 401 response since challenge was empty
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("Expected status 401 (empty challenge), got %d", resp.StatusCode)
+	}
+
+	// Read response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response: %v", err)
+	}
+
+	if string(respBody) != "empty challenge" {
+		t.Errorf("Expected 'empty challenge', got '%s'", string(respBody))
+	}
+
+	// Should have made 2 round trips before stopping at empty challenge
+	if callCount != 2 {
+		t.Errorf("Expected exactly 2 round trips (stopped at empty challenge), got %d", callCount)
+	}
+}
+
+// TestNegotiatorResponseDraining tests that responses are properly drained
+// to allow connection reuse between authentication attempts
+func TestNegotiatorResponseDraining(t *testing.T) {
+	callCount := 0
+
+	// Create a test server that tracks if response bodies are drained
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		authHeader := r.Header.Get("Authorization")
+
+		// Simulate a response that needs draining
+		responseData := []byte("response body that should be drained")
+
+		if callCount == 1 && authHeader == "" {
+			// First request: no auth, return 401 with Basic auth
+			w.Header().Set("Www-Authenticate", "Basic realm=\"test\"")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write(responseData)
+		} else if callCount == 2 && bytes.HasPrefix([]byte(authHeader), []byte("Basic ")) {
+			// Second request: Basic auth accepted
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("authenticated"))
+		} else {
+			// Unexpected request
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte("unexpected"))
+		}
+	}))
+	defer server.Close()
+
+	// Create a request
+	testData := []byte("test body")
+	req, err := http.NewRequest("POST", server.URL, io.NopCloser(bytes.NewReader(testData)))
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.SetBasicAuth("testuser", "testpass")
+
+	// Create client with NTLM negotiator
+	client := &http.Client{
+		Transport: Negotiator{
+			RoundTripper: http.DefaultTransport,
+		},
+	}
+
+	// Make the request - should go through multiple round trips
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Final response should be successful
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected final status 200, got %d", resp.StatusCode)
+	}
+
+	// Read final response
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response: %v", err)
+	}
+
+	if string(respBody) != "authenticated" {
+		t.Errorf("Expected 'authenticated', got '%s'", string(respBody))
+	}
+
+	// Verify multiple round trips occurred (indicating draining worked and allowed connection reuse)
+	// We expect 2 round trips: anonymous (drained), then basic auth (success)
+	if callCount != 2 {
+		t.Errorf("Expected exactly 2 round trips (draining allows reuse), got %d", callCount)
+	}
+
+	t.Logf("Successfully completed %d round trips with proper response draining", callCount)
+}

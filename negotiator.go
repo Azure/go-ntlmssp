@@ -148,14 +148,20 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 		return res, err
 	}
 
+	drainResponse := func(res *http.Response) {
+		// Drain body to allow connection reuse, then close it so we can reuse the response
+		_, _ = io.Copy(io.Discard, res.Body)
+		_ = res.Body.Close()
+	}
+
 	resauth := newAuthHeader(res.Header)
 	if resauth.isBasic() {
 		// Basic auth requested instead of NTLM/Negotiate
-		_, _ = io.Copy(io.Discard, res.Body)
-		res.Body.Close()
-		if err := body.rewind(); err != nil {
-			return nil, err
+		if body.rewind() != nil {
+			// Failed to rewind body, let client deal with response
+			return res, nil
 		}
+		drainResponse(res)
 		res, done, err = doRequest(req, rt, "Basic", id, nil)
 		if done {
 			return res, err
@@ -170,14 +176,14 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	}
 
 	// Server requested Negotiate/NTLM, start the handshake
-	_, _ = io.Copy(io.Discard, res.Body)
-	res.Body.Close()
 	// Don't need to send body for the handshake,
 	// but rewind it here in case we need it later
 	// and to wait until the wrapped roundtripper is done with it.
-	if err := body.rewind(); err != nil {
-		return nil, err
+	if body.rewind() != nil {
+		// Failed to rewind body, let client deal with response
+		return res, nil
 	}
+	drainResponse(res)
 	req.Body = nil
 	res, done, err = doRequest(req, rt, resauth.schema, id, nil)
 	if done {
@@ -188,7 +194,8 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	resauth = newAuthHeader(res.Header)
 	challengeMessage, err := resauth.token()
 	if err != nil {
-		return nil, err
+		// Failed to retrieve the token, let client deal with response
+		return res, nil
 	}
 	if !resauth.isNTLM() || len(challengeMessage) == 0 {
 		// Negotiation failed, let client deal with response
@@ -196,8 +203,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	}
 
 	// Resend message with challenge response
-	_, _ = io.Copy(io.Discard, res.Body)
-	res.Body.Close()
+	drainResponse(res)
 	req.Body = body
 	res, _, err = doRequest(req, rt, resauth.schema, id, challengeMessage)
 	return res, err
