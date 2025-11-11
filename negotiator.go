@@ -216,11 +216,12 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 		drainResponse(originalResp)
 		return resp, nil
 	}
+	resauth = newAuthHeader(resp.Header)
 	drainResponse(resp)
 
 	// Second step: process challenge and resend the original body with the authenticate message
 	req.Body = body
-	resp = completeHandshake(rt, resp, req, id)
+	resp = completeHandshake(rt, resauth, req, id)
 	if resp == nil {
 		return originalResp, nil
 	}
@@ -254,19 +255,10 @@ func clientHandshake(rt http.RoundTripper, req *http.Request, schema string, id 
 	if err != nil {
 		return nil
 	}
-	if res.StatusCode != http.StatusUnauthorized {
-		// We are expecting a 401 with challenge, but the server responded differently,
-		// maybe it even accepted our negotiate message without further challenge, which is
-		// valid per the spec (RFC 4559 Section 5).
-		// Return the response as is, negotiation is over.
-		return res
-	}
-	drainResponse(res)
-	return nil
+	return res
 }
 
-func completeHandshake(rt http.RoundTripper, serverResp *http.Response, req *http.Request, id identity) *http.Response {
-	resauth := newAuthHeader(serverResp.Header)
+func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Request, id identity) *http.Response {
 	challenge, err := resauth.token()
 	if err != nil {
 		return nil
