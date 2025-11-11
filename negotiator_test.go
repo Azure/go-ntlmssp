@@ -448,6 +448,14 @@ func (a *asyncRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 		// Start reading the body on a background goroutine
 		go func() {
 			defer req.Body.Close()
+			time.Sleep(30 * time.Millisecond)
+			// Access request headers in background goroutine
+			_ = req.Header.Get("Authorization")
+			_ = req.Header.Get("Content-Type")
+			_ = req.Header.Get("User-Agent")
+			// Also access other request fields that might be read
+			_ = req.Method
+			_ = req.URL.String()
 			// Simulate slow reading - this is key to testing the race condition
 			// Without the closeWaiter fix, this would race with the body being
 			// seeked and reused in the next request
@@ -461,20 +469,6 @@ func (a *asyncRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 		// Return immediately (before background goroutine finishes)
 		// This simulates the behavior that can cause races
 	}
-
-	// Simulate async header reading that continues after RoundTrip returns
-	// This tests the race condition where Negotiator modifies headers while
-	// the wrapped RoundTripper is still reading them on another goroutine
-	go func() {
-		time.Sleep(30 * time.Millisecond)
-		// Access request headers in background goroutine
-		_ = req.Header.Get("Authorization")
-		_ = req.Header.Get("Content-Type")
-		_ = req.Header.Get("User-Agent")
-		// Also access other request fields that might be read
-		_ = req.Method
-		_ = req.URL.String()
-	}()
 
 	authHeader := req.Header.Get("Authorization")
 
