@@ -118,89 +118,121 @@ type Negotiator struct{ http.RoundTripper }
 
 // RoundTrip sends the request to the server, handling any authentication
 // re-sends as needed.
-func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error) {
+func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Use default round tripper if not provided
 	rt := l.RoundTripper
 	if rt == nil {
 		rt = http.DefaultTransport
 	}
+
 	// If it is not basic auth, just round trip the request as usual
 	username, password, ok := req.BasicAuth()
 	if !ok {
 		return rt.RoundTrip(req)
 	}
-	id := &identity{
+	id := identity{
 		username: username,
 		password: password,
 	}
-	req = req.Clone(req.Context())
+
+	req = req.Clone(req.Context()) // Clone the request to avoid modifying the original
+
 	// We need to buffer or seek the request body to handle authentication challenges
 	// that require resending the body multiple times during the NTLM handshake.
 	body, err := newNegotiatorBody(req.Body)
 	if err != nil {
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
 		return nil, err
 	}
 	defer body.close()
-	req.Body = body
+
 	// First try anonymous, in case the server still finds us authenticated from previous traffic
-	res, done, err := doRequest(req, rt, "", nil, nil)
-	if done {
-		return res, err
-	}
-
-	resauth := newAuthHeader(res.Header)
-	if resauth.isBasic() {
-		// Basic auth requested instead of NTLM/Negotiate
-		_, _ = io.Copy(io.Discard, res.Body)
-		res.Body.Close()
-		if err := body.rewind(); err != nil {
-			return nil, err
-		}
-		res, done, err = doRequest(req, rt, "Basic", id, nil)
-		if done {
-			return res, err
-		}
-		resauth = newAuthHeader(res.Header)
-		// Continue in case the server upgraded from Basic to NTLM/Negotiate (rare but possible)
-	}
-
-	if !resauth.isNTLM() {
-		// Nothing to negotiate, let client deal with response
-		return res, err
-	}
-
-	// Server requested Negotiate/NTLM, start the handshake
-	_, _ = io.Copy(io.Discard, res.Body)
-	res.Body.Close()
-	// Don't need to send body for the handshake,
-	// but rewind it here in case we need it later
-	// and to wait until the wrapped roundtripper is done with it.
-	if err := body.rewind(); err != nil {
-		return nil, err
-	}
-	req.Body = nil
-	res, done, err = doRequest(req, rt, resauth.schema, id, nil)
-	if done {
-		return res, err
-	}
-
-	// Server should have responded with a challenge
-	resauth = newAuthHeader(res.Header)
-	challengeMessage, err := resauth.token()
+	req.Body = body
+	req.Header.Del("Authorization")
+	resp, err := rt.RoundTrip(req)
 	if err != nil {
 		return nil, err
 	}
-	if !resauth.isNTLM() || len(challengeMessage) == 0 {
-		// Negotiation failed, let client deal with response
-		return res, nil
+	if resp.StatusCode != http.StatusUnauthorized {
+		// No authentication required, return the response as is
+		return resp, nil
 	}
 
-	// Resend message with challenge response
-	_, _ = io.Copy(io.Discard, res.Body)
-	res.Body.Close()
+	// Note that from here on, the response returned in case of error or unsuccessful
+	// negotiation is the one we just got from the server. This is to allow the caller
+	// to do its own handling in case we can't do it in this roundtrip.
+	originalResp := resp
+
+	resauth := newAuthHeader(resp.Header)
+	if resauth.isBasic() {
+		// Basic auth requested instead of NTLM/Negotiate.
+		//
+		// Rewind the body, we will resend it.
+		if body.rewind() != nil {
+			return originalResp, nil
+		}
+		req.SetBasicAuth(id.username, id.password)
+		resp, err := rt.RoundTrip(req)
+		if err != nil {
+			return originalResp, nil
+		}
+		if resp.StatusCode != http.StatusUnauthorized {
+			// Basic auth succeeded, return the new response
+			drainResponse(originalResp)
+			return resp, nil
+		}
+		resauth = newAuthHeader(resp.Header)
+		if !resauth.isNTLM() {
+			// No NTLM/Negotiate requested, return the response as is
+			return resp, nil
+		}
+		// Server upgraded from Basic to NTLM/Negotiate (rare but possible)
+		drainResponse(resp)
+		// After Basic-to-NTLM upgrade, update originalResp to the NTLM-triggering response
+		originalResp = resp
+	} else if !resauth.isNTLM() {
+		// No NTLM/Negotiate requested, return the response as is
+		return originalResp, nil
+	}
+
+	// Server requested Negotiate/NTLM.
+
+	// Rewind the body, we will resend it.
+	if body.rewind() != nil {
+		return originalResp, nil
+	}
+
+	// Start NTLM/Negotiate handshake
+
+	// First step: send negotiate message
+	resp = clientHandshake(rt, req, resauth.schema, id)
+	if resp == nil {
+		return originalResp, nil
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		// We are expecting a 401 with challenge, but the server responded differently,
+		// maybe it even accepted our negotiate message without further challenge, which is
+		// valid per the spec (RFC 4559 Section 5).
+		// Return the response as is, negotiation is over.
+		drainResponse(originalResp)
+		return resp, nil
+	}
+	resauth = newAuthHeader(resp.Header)
+	drainResponse(resp)
+
+	// Second step: process challenge and resend the original body with the authenticate message
 	req.Body = body
-	res, _, err = doRequest(req, rt, resauth.schema, id, challengeMessage)
-	return res, err
+	resp = completeHandshake(rt, resauth, req, id)
+	if resp == nil {
+		return originalResp, nil
+	}
+	// We could return the original response in case of 401 again, but at this point
+	// it's better to return the latest response from the server, as it might be the case
+	// that we are really not authorized.
+	drainResponse(originalResp) // Done with the original response
+	return resp, nil
 }
 
 type identity struct {
@@ -208,47 +240,46 @@ type identity struct {
 	password string
 }
 
-// doRequest performs a single HTTP request with the specified authentication schema and identity.
-// It returns the response, a boolean indicating if no further authentication is needed, and any error encountered.
-func doRequest(req *http.Request, rt http.RoundTripper, authSchema string, id *identity, challenge []byte) (res *http.Response, done bool, err error) {
-	switch authSchema {
-	case "":
-		if id != nil {
-			panic("identity provided with empty auth schema")
-		}
-		req.Header.Del("Authorization")
-	case "Basic":
-		if id == nil {
-			panic("identity required for basic auth")
-		}
-		req.SetBasicAuth(id.username, id.password)
-	case "NTLM", "Negotiate":
-		if id == nil {
-			panic("identity required for NTLM/Negotiate auth")
-		}
-		var auth []byte
-		if challenge == nil {
-			// First step: send negotiate message
-			_, domain, _ := GetDomain(id.username)
-			auth, err = NewNegotiateMessage(domain, "")
-			if err != nil {
-				return nil, true, err
-			}
-		} else {
-			// Second step: send authenticate message
-			user, _, domainNeeded := GetDomain(id.username)
-			auth, err = ProcessChallenge(challenge, user, id.password, domainNeeded)
-			if err != nil {
-				return nil, true, err
-			}
-		}
-		req.Header.Set("Authorization", authSchema+" "+base64.StdEncoding.EncodeToString(auth))
-	default:
-		panic("unreachable")
-	}
-	res, err = rt.RoundTrip(req)
+func drainResponse(res *http.Response) {
+	// Drain body and close it to allow reusing the connection
+	_, _ = io.Copy(io.Discard, res.Body)
+	_ = res.Body.Close()
+}
+
+func clientHandshake(rt http.RoundTripper, req *http.Request, schema string, id identity) *http.Response {
+	_, domain, _ := GetDomain(id.username)
+	auth, err := NewNegotiateMessage(domain, "")
 	if err != nil {
-		return res, true, err
+		return nil
 	}
-	return res, res.StatusCode != http.StatusUnauthorized, nil
+	req.Header.Set("Authorization", schema+" "+base64.StdEncoding.EncodeToString(auth))
+	req.Body = nil
+	res, err := rt.RoundTrip(req)
+	if err != nil {
+		return nil
+	}
+	return res
+}
+
+func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Request, id identity) *http.Response {
+	challenge, err := resauth.token()
+	if err != nil {
+		return nil
+	}
+	if !resauth.isNTLM() || len(challenge) == 0 {
+		// The only expected schema here is NTLM/Negotiate with a challenge token,
+		// otherwise the negotiation is over.
+		return nil
+	}
+	user, _, domainNeeded := GetDomain(id.username)
+	auth, err := ProcessChallenge(challenge, user, id.password, domainNeeded)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Authorization", resauth.schema+" "+base64.StdEncoding.EncodeToString(auth))
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		return nil
+	}
+	return resp
 }
