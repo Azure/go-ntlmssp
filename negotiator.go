@@ -165,8 +165,6 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	resauth := newAuthHeader(resp.Header)
 	if resauth.isBasic() {
 		// Basic auth requested instead of NTLM/Negotiate.
-		// If the request fails, return the original response
-		// to allow the caller to handle it.
 		//
 		// Rewind the body, we will resend it.
 		if body.rewind() != nil {
