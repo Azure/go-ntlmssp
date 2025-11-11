@@ -63,3 +63,8 @@ func (h authheader) token() ([]byte, error) {
 	// RFC4559 4.2 - The token is a base64-encoded value
 	return base64.StdEncoding.DecodeString(h.data)
 }
+
+func isNTLMAuthRequired(res *http.Response) bool {
+	resauth := newAuthHeader(res.Header)
+	return resauth.isNTLM()
+}

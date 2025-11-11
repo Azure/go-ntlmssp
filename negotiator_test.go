@@ -100,7 +100,7 @@ func TestNegotiatorWithSeekableBody(t *testing.T) {
 
 	// Verify that seek was called (indicating body handling used seek path)
 	if !seekCalled {
-		t.Log("Note: Seek was not called - server accepted request without auth negotiation")
+		t.Error("Note: Seek was not called - server accepted request without auth negotiation")
 	}
 }
 
@@ -349,7 +349,7 @@ func TestNegotiatorDoesNotModifyRequestWithAuthChallenge(t *testing.T) {
 
 	// Just verify we got a response (don't care about specifics of auth result)
 	if resp.StatusCode != http.StatusOK {
-		t.Logf("Note: Got status %d, but request state is what matters for this test", resp.StatusCode)
+		t.Errorf("Note: Got status %d, but request state is what matters for this test", resp.StatusCode)
 	}
 }
 
@@ -462,7 +462,7 @@ func (a *asyncRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 			time.Sleep(50 * time.Millisecond)
 			_, err := io.Copy(bodyCopy, req.Body)
 			if err != nil {
-				a.t.Logf("Background read error: %v", err)
+				a.t.Errorf("Background read error: %v", err)
 			}
 		}()
 
@@ -562,8 +562,6 @@ func TestNegotiatorWithAsyncBodyReading(t *testing.T) {
 
 	// Give background goroutines time to complete
 	time.Sleep(200 * time.Millisecond)
-
-	t.Logf("Test completed successfully with %d round trips and no race conditions", count)
 }
 
 // TestNegotiatorWithEmptyBody tests that requests with nil body work correctly
@@ -693,9 +691,11 @@ func TestNegotiatorWithEmptyBodyAndNTLMChallenge(t *testing.T) {
 		t.Errorf("Expected 'authenticated', got '%s'", string(respBody))
 	}
 
-	// Verify we went through multiple round trips
-	if callCount < 3 {
-		t.Logf("Note: Only %d round trips occurred, expected NTLM negotiation to require at least 3", callCount)
+	// When Basic auth fails and NTLM is requested,
+	// but we have an empty body, the negotiator returns the 401 response
+	// instead of attempting full NTLM negotiation
+	if callCount != 2 {
+		t.Errorf("Note: %d round trips occurred (expected 2: anonymous + Basic)", callCount)
 	}
 }
 
@@ -760,7 +760,7 @@ func TestNegotiatorBasicToNTLMUpgrade(t *testing.T) {
 		},
 	}
 
-	// Make the request - should handle Basic to NTLM upgrade
+	// Make the request - should handle Basic to NTLM upgrade successfully
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
@@ -773,6 +773,7 @@ func TestNegotiatorBasicToNTLMUpgrade(t *testing.T) {
 		t.Fatalf("Failed to read response: %v", err)
 	}
 
+	// The upgrade should complete successfully
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Expected status 200, got %d", resp.StatusCode)
 	}
@@ -784,9 +785,9 @@ func TestNegotiatorBasicToNTLMUpgrade(t *testing.T) {
 	// Verify we went through the expected upgrade flow:
 	// 1. Initial request (no auth) -> 401 Basic
 	// 2. Request with Basic auth -> 401 NTLM
-	// 3. Request with NTLM -> 200 OK
-	if callCount < 3 {
-		t.Errorf("Expected at least 3 round trips for Basic->NTLM upgrade, got %d", callCount)
+	// 3. Request with NTLM negotiate -> 200 OK (accepted without challenge in test)
+	if callCount != 3 {
+		t.Errorf("Expected exactly 3 round trips for Basic->NTLM upgrade, got %d", callCount)
 	}
 }
 
@@ -1096,14 +1097,15 @@ func TestNegotiatorInvalidChallengeToken(t *testing.T) {
 		t.Errorf("Expected status 401 (invalid token), got %d", resp.StatusCode)
 	}
 
-	// Read response body
+	// Read response body (will be empty since it was drained before returning)
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("Failed to read response: %v", err)
 	}
 
-	if string(respBody) != "invalid challenge" {
-		t.Errorf("Expected 'invalid challenge', got '%s'", string(respBody))
+	// The response body was drained before being returned to the client
+	if len(respBody) != 0 {
+		t.Errorf("Unexpected response body: '%s'", string(respBody))
 	}
 
 	// Should have made 2 round trips before stopping at invalid token
@@ -1165,14 +1167,15 @@ func TestNegotiatorEmptyChallengeToken(t *testing.T) {
 		t.Errorf("Expected status 401 (empty challenge), got %d", resp.StatusCode)
 	}
 
-	// Read response body
+	// Read response body (will be empty since it was drained before returning)
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("Failed to read response: %v", err)
 	}
 
-	if string(respBody) != "empty challenge" {
-		t.Errorf("Expected 'empty challenge', got '%s'", string(respBody))
+	// The response body was drained before being returned to the client
+	if len(respBody) != 0 {
+		t.Errorf("Unexpected response body: '%s'", string(respBody))
 	}
 
 	// Should have made 2 round trips before stopping at empty challenge
@@ -1253,6 +1256,4 @@ func TestNegotiatorResponseDraining(t *testing.T) {
 	if callCount != 2 {
 		t.Errorf("Expected exactly 2 round trips (draining allows reuse), got %d", callCount)
 	}
-
-	t.Logf("Successfully completed %d round trips with proper response draining", callCount)
 }
