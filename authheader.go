@@ -20,20 +20,23 @@ type authheader struct {
 // It selects the most preferred authentication scheme.
 // If no supported scheme is found, it returns an empty authheader.
 func newAuthHeader(req http.Header) authheader {
-	preferred := -1
-	for _, s := range req.Values("Www-Authenticate") {
+	auth := req.Values("Www-Authenticate")
+	preferred, idx := -1, -1
+	for i, s := range auth {
 		for j, schema := range schemaPreference {
 			if s == schema || strings.HasPrefix(s, schema+" ") {
 				if preferred == -1 || j < preferred {
 					preferred = j
+					idx = i
+					break
 				}
 			}
 		}
 	}
-	if preferred == -1 {
+	if idx == -1 {
 		return authheader{}
 	}
-	schema, data, _ := strings.Cut(schemaPreference[preferred], " ")
+	schema, data, _ := strings.Cut(auth[idx], " ")
 	return authheader{
 		schema: schema,
 		data:   data,
