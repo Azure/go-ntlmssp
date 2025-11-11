@@ -9,7 +9,34 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 )
+
+// closeWaiter wraps an io.ReadSeeker and signals when Close is called,
+// allowing us to wait before reusing the body after RoundTrip returns.
+type closeWaiter struct {
+	io.ReadSeeker
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newCloseWaiter(rs io.ReadSeeker) *closeWaiter {
+	return &closeWaiter{
+		ReadSeeker: rs,
+		closed:     make(chan struct{}),
+	}
+}
+
+func (cw *closeWaiter) Close() error {
+	cw.once.Do(func() {
+		close(cw.closed)
+	})
+	return nil
+}
+
+func (cw *closeWaiter) waitForClose() {
+	<-cw.closed
+}
 
 // GetDomain extracts the domain from the username if present.
 func GetDomain(username string) (user string, domain string, domainNeeded bool) {
@@ -51,6 +78,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	// that require resending the body multiple times during the NTLM handshake.
 	var body io.ReadSeeker
 	var bodyStartPos int64
+	var bodyWrapper *closeWaiter
 	if req.Body != nil {
 		// Check if body is already seekable to avoid buffering large bodies
 		if seeker, ok := req.Body.(io.ReadSeeker); ok {
@@ -81,7 +109,8 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 			body = bytes.NewReader(bodyBytes)
 			bodyStartPos = 0
 		}
-		req.Body = io.NopCloser(body)
+		bodyWrapper = newCloseWaiter(body)
+		req.Body = bodyWrapper
 	}
 	// first try anonymous, in case the server still finds us
 	// authenticated from previous traffic
@@ -100,11 +129,14 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 		_, _ = io.Copy(io.Discard, res.Body)
 		res.Body.Close()
 		if body != nil {
+			// Wait for the wrapped RoundTripper to finish with the body
+			bodyWrapper.waitForClose()
 			_, err = body.Seek(bodyStartPos, io.SeekStart)
 			if err != nil {
 				return nil, err
 			}
-			req.Body = io.NopCloser(body)
+			bodyWrapper = newCloseWaiter(body)
+			req.Body = bodyWrapper
 		}
 
 		res, err = rt.RoundTrip(req)
@@ -144,11 +176,14 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 		}
 
 		if body != nil {
+			// Wait for the wrapped RoundTripper to finish with the body
+			bodyWrapper.waitForClose()
 			_, err = body.Seek(bodyStartPos, io.SeekStart)
 			if err != nil {
 				return nil, err
 			}
-			req.Body = io.NopCloser(body)
+			bodyWrapper = newCloseWaiter(body)
+			req.Body = bodyWrapper
 		}
 
 		res, err = rt.RoundTrip(req)
@@ -181,11 +216,14 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 		}
 
 		if body != nil {
+			// Wait for the wrapped RoundTripper to finish with the body
+			bodyWrapper.waitForClose()
 			_, err = body.Seek(bodyStartPos, io.SeekStart)
 			if err != nil {
 				return nil, err
 			}
-			req.Body = io.NopCloser(body)
+			bodyWrapper = newCloseWaiter(body)
+			req.Body = bodyWrapper
 		}
 
 		return rt.RoundTrip(req)
