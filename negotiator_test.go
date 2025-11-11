@@ -8,7 +8,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // seekableBuffer implements io.ReadSeeker to simulate a seekable body like a file
@@ -425,4 +427,133 @@ func TestNegotiatorWithUnseekableReadSeeker(t *testing.T) {
 	if string(respBody) != "ok" {
 		t.Errorf("Expected 'ok', got '%s'", string(respBody))
 	}
+}
+
+// asyncRoundTripper simulates a RoundTripper that continues reading the body
+// on a background goroutine after RoundTrip returns, which is allowed by the
+// http.RoundTripper contract.
+type asyncRoundTripper struct {
+	// requestCount tracks how many times RoundTrip has been called
+	requestCount atomic.Int32
+	t            *testing.T
+}
+
+func (a *asyncRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	count := a.requestCount.Add(1)
+
+	// Simulate async body reading
+	bodyCopy := &bytes.Buffer{}
+	if req.Body != nil {
+		// Start reading the body on a background goroutine
+		go func() {
+			defer req.Body.Close()
+			// Simulate slow reading - this is key to testing the race condition
+			// Without the closeWaiter fix, this would race with the body being
+			// seeked and reused in the next request
+			time.Sleep(50 * time.Millisecond)
+			_, err := io.Copy(bodyCopy, req.Body)
+			if err != nil {
+				a.t.Logf("Background read error: %v", err)
+			}
+		}()
+
+		// Return immediately (before background goroutine finishes)
+		// This simulates the behavior that can cause races
+	}
+
+	authHeader := req.Header.Get("Authorization")
+
+	// First request with no auth returns 401 requesting Basic or Negotiate
+	if count == 1 && authHeader == "" {
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Header: http.Header{
+				"Www-Authenticate": []string{"Basic realm=\"test\"", "Negotiate"},
+			},
+			Body:          io.NopCloser(bytes.NewReader([]byte{})),
+			ContentLength: 0,
+			Request:       req,
+		}, nil
+	}
+
+	// Second request with Basic auth, reject and request Negotiate
+	if count == 2 && bytes.HasPrefix([]byte(authHeader), []byte("Basic ")) {
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Header: http.Header{
+				"Www-Authenticate": []string{"Negotiate"},
+			},
+			Body:          io.NopCloser(bytes.NewReader([]byte{})),
+			ContentLength: 0,
+			Request:       req,
+		}, nil
+	}
+
+	// Any other request: return success
+	return &http.Response{
+		StatusCode:    http.StatusOK,
+		Header:        http.Header{},
+		Body:          io.NopCloser(bytes.NewReader([]byte("success"))),
+		ContentLength: 7,
+		Request:       req,
+	}, nil
+}
+
+// TestNegotiatorWithAsyncBodyReading tests that the Negotiator correctly waits
+// for the wrapped RoundTripper to close the body before reusing it, preventing
+// race conditions when the RoundTripper reads the body asynchronously.
+// This test specifically covers the case where a RoundTripper implementation
+// reads the request body on a background goroutine that continues after
+// RoundTrip returns, which is allowed by the http.RoundTripper contract.
+func TestNegotiatorWithAsyncBodyReading(t *testing.T) {
+	testData := []byte("test data that will be read asynchronously")
+
+	// Create an async RoundTripper that simulates background body reading
+	asyncRT := &asyncRoundTripper{t: t}
+
+	// Create a request with a body
+	bodyReader := bytes.NewReader(testData)
+	req, err := http.NewRequest("POST", "http://example.com/test", io.NopCloser(bodyReader))
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.SetBasicAuth("testuser", "testpass")
+
+	// Create Negotiator with the async RoundTripper
+	negotiator := Negotiator{RoundTripper: asyncRT}
+
+	// Make the request - this will trigger multiple round trips with body reuse
+	// Without the closeWaiter fix, this would cause a race condition where:
+	// 1. RoundTrip returns while background goroutine is still reading body
+	// 2. Negotiator immediately seeks and reuses the body
+	// 3. Background goroutine and next RoundTrip both access body concurrently
+	resp, err := negotiator.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response: %v", err)
+	}
+
+	if string(respBody) != "success" {
+		t.Errorf("Expected 'success', got '%s'", string(respBody))
+	}
+
+	// Verify multiple round trips occurred (testing body reuse)
+	count := asyncRT.requestCount.Load()
+
+	// Should be at least 2 round trips: 1. anonymous, 2. with auth
+	// This is sufficient to test the critical path where body is reused
+	if count < 2 {
+		t.Errorf("Expected at least 2 round trips to test body reuse, got %d", count)
+	}
+
+	// Give background goroutines time to complete
+	time.Sleep(200 * time.Millisecond)
+
+	t.Logf("Test completed successfully with %d round trips and no race conditions", count)
 }

@@ -79,7 +79,7 @@ jobs:
           Write-Host "Test Domain: $env:NTLM_TEST_DOMAIN"
 
           # Run the E2E tests
-          go test -v -timeout 5m
+          go test -v -timeout 5m -race
 
       - name: Cleanup Test Environment
         if: always()
