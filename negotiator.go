@@ -150,8 +150,8 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	}
 
 	resauth := newAuthHeader(res.Header)
-	if !resauth.isNTLM() {
-		// Unauthorized, Negotiate not requested, let's try with basic auth
+	if resauth.isBasic() {
+		// Basic auth requested instead of NTLM/Negotiate
 		_, _ = io.Copy(io.Discard, res.Body)
 		res.Body.Close()
 		if err := body.rewind(); err != nil {
@@ -162,10 +162,12 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 			return res, err
 		}
 		resauth = newAuthHeader(res.Header)
-		if !resauth.isNTLM() {
-			// Nothing to negotiate, let client deal with response
-			return res, err
-		}
+		// Continue in case the server upgraded from Basic to NTLM/Negotiate (rare but possible)
+	}
+
+	if !resauth.isNTLM() {
+		// Nothing to negotiate, let client deal with response
+		return res, err
 	}
 
 	// Server requested Negotiate/NTLM, start the handshake

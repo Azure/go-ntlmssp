@@ -4,7 +4,8 @@
 
 Go package that provides NTLM/Negotiate authentication over HTTP
 
-Protocol details from https://msdn.microsoft.com/en-us/library/cc236621.aspx
+NTLM protocol details from https://msdn.microsoft.com/en-us/library/cc236621.aspx
+NTLM over HTTP details from https://datatracker.ietf.org/doc/html/rfc4559
 Implementation hints from http://davenport.sourceforge.net/ntlm.html
 
 This package only implements authentication, no key exchange or encryption. It
