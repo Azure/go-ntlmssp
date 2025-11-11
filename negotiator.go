@@ -171,7 +171,13 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	// Server requested Negotiate/NTLM, start the handshake
 	_, _ = io.Copy(io.Discard, res.Body)
 	res.Body.Close()
-	req.Body = nil // don't need to send body for the handshake
+	// Don't need to send body for the handshake,
+	// but rewind it here in case we need it later
+	// and to wait until the wrapped roundtripper is done with it.
+	if err := body.rewind(); err != nil {
+		return nil, err
+	}
+	req.Body = nil
 	res, done, err = doRequest(req, rt, resauth.schema, id, nil)
 	if done {
 		return res, err
@@ -191,9 +197,6 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	// Resend message with challenge response
 	_, _ = io.Copy(io.Discard, res.Body)
 	res.Body.Close()
-	if err := body.rewind(); err != nil {
-		return nil, err
-	}
 	req.Body = body
 	res, _, err = doRequest(req, rt, resauth.schema, id, challengeMessage)
 	return res, err
