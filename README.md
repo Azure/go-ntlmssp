@@ -22,6 +22,8 @@ go get github.com/Azure/go-ntlmssp
 
 # Usage
 
+## Basic Example
+
 ```go
 url, user, password := "http://www.example.com/secrets", "robpike", "pw123"
 client := &http.Client{
@@ -34,6 +36,26 @@ req, _ := http.NewRequest("GET", url, nil)
 req.SetBasicAuth(user, password)
 res, _ := client.Do(req)
 ```
+
+## HTTPS Support
+
+The library works seamlessly with HTTPS. Simply use `https://` URLs and configure TLS as needed:
+
+```go
+client := &http.Client{
+  Transport: ntlmssp.Negotiator{
+    RoundTripper: &http.Transport{
+      TLSClientConfig: &tls.Config{
+        MinVersion: tls.VersionTLS12,
+      },
+    },
+  },
+}
+```
+
+## More Examples
+
+For more detailed examples including HTTPS, custom TLS configuration, and POST requests, see the [examples directory](examples/).
 
 -----
 This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/). For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
