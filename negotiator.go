@@ -140,9 +140,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 		return nil, err
 	}
 	defer body.close()
-	if req.Body != nil {
-		req.Body = body
-	}
+	req.Body = body
 	// First try anonymous, in case the server still finds us authenticated from previous traffic
 	res, done, err := doRequest(req, rt, "", nil, nil)
 	if done {
@@ -173,9 +171,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	// Server requested Negotiate/NTLM, start the handshake
 	_, _ = io.Copy(io.Discard, res.Body)
 	res.Body.Close()
-	if err := body.rewind(); err != nil {
-		return nil, err
-	}
+	req.Body = nil // don't need to send body for the handshake
 	res, done, err = doRequest(req, rt, resauth.schema, id, nil)
 	if done {
 		return res, err
@@ -198,6 +194,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	if err := body.rewind(); err != nil {
 		return nil, err
 	}
+	req.Body = body
 	res, _, err = doRequest(req, rt, resauth.schema, id, challengeMessage)
 	return res, err
 }
