@@ -698,3 +698,169 @@ func TestNegotiatorWithEmptyBodyAndNTLMChallenge(t *testing.T) {
 		t.Logf("Note: Only %d round trips occurred, expected NTLM negotiation to require at least 3", callCount)
 	}
 }
+
+// TestNegotiatorBasicToNTLMUpgrade tests that the Negotiator correctly handles
+// servers that initially request Basic auth and then upgrade to NTLM
+func TestNegotiatorBasicToNTLMUpgrade(t *testing.T) {
+	testData := []byte("test request body")
+	callCount := 0
+
+	// Create a test server that first accepts Basic auth, then upgrades to NTLM
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		authHeader := r.Header.Get("Authorization")
+
+		// Verify body is sent correctly on all requests
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("Failed to read body on request %d: %v", callCount, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if !bytes.Equal(body, testData) {
+			t.Errorf("Body mismatch on request %d: expected %q, got %q", callCount, testData, body)
+		}
+
+		if callCount == 1 {
+			// First request: no auth, return 401 with Basic auth request
+			w.Header().Set("Www-Authenticate", "Basic realm=\"test\"")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte("basic auth required"))
+		} else if callCount == 2 && bytes.HasPrefix([]byte(authHeader), []byte("Basic ")) {
+			// Second request: Basic auth provided, but upgrade to NTLM
+			w.Header().Set("Www-Authenticate", "NTLM")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte("upgrading to ntlm"))
+		} else {
+			// Final request: accept (would be NTLM in real scenario)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("authenticated"))
+		}
+	}))
+	defer server.Close()
+
+	// Create a POST request with a body
+	req, err := http.NewRequest("POST", server.URL, io.NopCloser(bytes.NewReader(testData)))
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.SetBasicAuth("testuser", "testpass")
+
+	// Create client with NTLM negotiator
+	client := &http.Client{
+		Transport: Negotiator{
+			RoundTripper: http.DefaultTransport,
+		},
+	}
+
+	// Make the request - should handle Basic to NTLM upgrade
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	if string(respBody) != "authenticated" {
+		t.Errorf("Expected 'authenticated', got '%s'", string(respBody))
+	}
+
+	// Verify we went through the expected upgrade flow:
+	// 1. Initial request (no auth) -> 401 Basic
+	// 2. Request with Basic auth -> 401 NTLM
+	// 3. Request with NTLM -> 200 OK
+	if callCount < 3 {
+		t.Errorf("Expected at least 3 round trips for Basic->NTLM upgrade, got %d", callCount)
+	}
+}
+
+// TestNegotiatorBasicAuthOnly tests that the Negotiator correctly handles
+// servers that only request Basic auth and accept it without upgrading to NTLM
+func TestNegotiatorBasicAuthOnly(t *testing.T) {
+	testData := []byte("test request body")
+	callCount := 0
+
+	// Create a test server that only accepts Basic auth
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		authHeader := r.Header.Get("Authorization")
+
+		// Verify body is sent correctly on all requests
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("Failed to read body on request %d: %v", callCount, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if !bytes.Equal(body, testData) {
+			t.Errorf("Body mismatch on request %d: expected %q, got %q", callCount, testData, body)
+		}
+
+		if callCount == 1 && authHeader == "" {
+			// First request: no auth, return 401 with Basic auth request
+			w.Header().Set("Www-Authenticate", "Basic realm=\"test\"")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte("basic auth required"))
+		} else if callCount == 2 && bytes.HasPrefix([]byte(authHeader), []byte("Basic ")) {
+			// Second request: Basic auth provided, accept it
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("authenticated"))
+		} else {
+			// Unexpected scenario
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte("unexpected request"))
+		}
+	}))
+	defer server.Close()
+
+	// Create a POST request with a body
+	req, err := http.NewRequest("POST", server.URL, io.NopCloser(bytes.NewReader(testData)))
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.SetBasicAuth("testuser", "testpass")
+
+	// Create client with NTLM negotiator
+	client := &http.Client{
+		Transport: Negotiator{
+			RoundTripper: http.DefaultTransport,
+		},
+	}
+
+	// Make the request - should succeed with Basic auth only
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	if string(respBody) != "authenticated" {
+		t.Errorf("Expected 'authenticated', got '%s'", string(respBody))
+	}
+
+	// Verify we went through the expected Basic auth flow:
+	// 1. Initial request (no auth) -> 401 Basic
+	// 2. Request with Basic auth -> 200 OK
+	if callCount != 2 {
+		t.Errorf("Expected exactly 2 round trips for Basic auth only, got %d", callCount)
+	}
+}

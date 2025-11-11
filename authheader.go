@@ -48,6 +48,11 @@ func (h authheader) isNTLM() bool {
 	return h.schema == "NTLM" || h.schema == "Negotiate"
 }
 
+// isBasic returns true if the authheader schema is Basic.
+func (h authheader) isBasic() bool {
+	return h.schema == "Basic"
+}
+
 // token extracts and decodes the base64 token from the authheader.
 // It returns nil if the schema is not NTLM or Negotiate.
 func (h authheader) token() ([]byte, error) {
