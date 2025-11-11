@@ -12,30 +12,86 @@ import (
 	"sync"
 )
 
-// closeWaiter wraps an io.ReadSeeker and signals when Close is called,
-// allowing us to wait before reusing the body after RoundTrip returns.
-type closeWaiter struct {
-	io.ReadSeeker
-	closed chan struct{}
-	once   sync.Once
+// negotiatorBody wraps an io.ReadSeeker to allow waiting for its closure
+// before rewinding and reusing it.
+type negotiatorBody struct {
+	body     io.ReadSeeker
+	closed   chan struct{}
+	once     sync.Once
+	startPos int64
 }
 
-func newCloseWaiter(rs io.ReadSeeker) *closeWaiter {
-	return &closeWaiter{
-		ReadSeeker: rs,
-		closed:     make(chan struct{}),
+// newNegotiatorBody creates a negotiatorBody from the provided io.Reader.
+// If the body is nil, it returns nil.
+// If the body is already an io.ReadSeeker, it uses it directly.
+// Otherwise, it reads the entire body into memory to allow rewinding.
+func newNegotiatorBody(body io.Reader) (*negotiatorBody, error) {
+	if body == nil {
+		return nil, nil
 	}
+	// Check if body is already seekable to avoid buffering large bodies
+	if seeker, ok := body.(io.ReadSeeker); ok {
+		// Remember the current position
+		startPos, err := seeker.Seek(0, io.SeekCurrent)
+		if err == nil {
+			// Seeking succeeded, use the seekable body directly
+			return &negotiatorBody{
+				body:     seeker,
+				closed:   make(chan struct{}),
+				startPos: startPos,
+			}, nil
+		}
+		// Seeking failed (e.g., pipes), fallback to buffering
+	}
+	// For non-seekable bodies, buffer in memory as required
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return nil, err
+	}
+	return &negotiatorBody{
+		body:   bytes.NewReader(data),
+		closed: make(chan struct{}),
+	}, nil
 }
 
-func (cw *closeWaiter) Close() error {
-	cw.once.Do(func() {
-		close(cw.closed)
+func (b *negotiatorBody) Read(p []byte) (n int, err error) {
+	if b == nil {
+		return 0, io.EOF
+	}
+	return b.body.Read(p)
+}
+
+// Close signals that the body is no longer needed for the current request.
+// It allows the negotiator to rewind the body for potential reuse.
+// The underlying body is not closed here; use close() for that.
+func (b *negotiatorBody) Close() error {
+	if b == nil {
+		return nil
+	}
+	b.once.Do(func() {
+		close(b.closed)
 	})
 	return nil
 }
 
-func (cw *closeWaiter) waitForClose() {
-	<-cw.closed
+// close closes the underlying body if it implements io.Closer.
+func (b *negotiatorBody) close() {
+	if b == nil {
+		return
+	}
+	if closer, ok := b.body.(io.Closer); ok {
+		_ = closer.Close()
+	}
+}
+
+// rewind rewinds the body to the start position for reuse.
+func (b *negotiatorBody) rewind() error {
+	if b == nil {
+		return nil
+	}
+	<-b.closed
+	_, err := b.body.Seek(b.startPos, io.SeekStart)
+	return err
 }
 
 // GetDomain extracts the domain from the username if present.
@@ -76,41 +132,13 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	reqauthBasic := reqauth.Basic()
 	// We need to buffer or seek the request body to handle authentication challenges
 	// that require resending the body multiple times during the NTLM handshake.
-	var body io.ReadSeeker
-	var bodyStartPos int64
-	var bodyWrapper *closeWaiter
+	body, err := newNegotiatorBody(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	defer body.close()
 	if req.Body != nil {
-		// Check if body is already seekable to avoid buffering large bodies
-		if seeker, ok := req.Body.(io.ReadSeeker); ok {
-			// Remember the current position
-			bodyStartPos, err = seeker.Seek(0, io.SeekCurrent)
-			if err == nil {
-				// Seeking succeeded, use the seekable body directly
-				body = seeker
-				// Close the original body as mandated by http.RoundTripper
-				defer req.Body.Close()
-			} else {
-				// Seeking failed (e.g., pipes), fallback to buffering
-				bodyBytes, err := io.ReadAll(req.Body)
-				req.Body.Close()
-				if err != nil {
-					return nil, err
-				}
-				body = bytes.NewReader(bodyBytes)
-				bodyStartPos = 0
-			}
-		} else {
-			// For non-seekable bodies, buffer in memory as required
-			bodyBytes, err := io.ReadAll(req.Body)
-			req.Body.Close()
-			if err != nil {
-				return nil, err
-			}
-			body = bytes.NewReader(bodyBytes)
-			bodyStartPos = 0
-		}
-		bodyWrapper = newCloseWaiter(body)
-		req.Body = bodyWrapper
+		req.Body = body
 	}
 	// first try anonymous, in case the server still finds us
 	// authenticated from previous traffic
@@ -128,17 +156,9 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 		req.Header.Set("Authorization", reqauthBasic)
 		_, _ = io.Copy(io.Discard, res.Body)
 		res.Body.Close()
-		if body != nil {
-			// Wait for the wrapped RoundTripper to finish with the body
-			bodyWrapper.waitForClose()
-			_, err = body.Seek(bodyStartPos, io.SeekStart)
-			if err != nil {
-				return nil, err
-			}
-			bodyWrapper = newCloseWaiter(body)
-			req.Body = bodyWrapper
+		if err := body.rewind(); err != nil {
+			return nil, err
 		}
-
 		res, err = rt.RoundTrip(req)
 		if err != nil {
 			return nil, err
@@ -175,17 +195,9 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 			req.Header.Set("Authorization", "Negotiate "+base64.StdEncoding.EncodeToString(negotiateMessage))
 		}
 
-		if body != nil {
-			// Wait for the wrapped RoundTripper to finish with the body
-			bodyWrapper.waitForClose()
-			_, err = body.Seek(bodyStartPos, io.SeekStart)
-			if err != nil {
-				return nil, err
-			}
-			bodyWrapper = newCloseWaiter(body)
-			req.Body = bodyWrapper
+		if err := body.rewind(); err != nil {
+			return nil, err
 		}
-
 		res, err = rt.RoundTrip(req)
 		if err != nil {
 			return nil, err
@@ -215,17 +227,9 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 			req.Header.Set("Authorization", "Negotiate "+base64.StdEncoding.EncodeToString(authenticateMessage))
 		}
 
-		if body != nil {
-			// Wait for the wrapped RoundTripper to finish with the body
-			bodyWrapper.waitForClose()
-			_, err = body.Seek(bodyStartPos, io.SeekStart)
-			if err != nil {
-				return nil, err
-			}
-			bodyWrapper = newCloseWaiter(body)
-			req.Body = bodyWrapper
+		if err := body.rewind(); err != nil {
+			return nil, err
 		}
-
 		return rt.RoundTrip(req)
 	}
 

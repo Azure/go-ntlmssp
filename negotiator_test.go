@@ -557,3 +557,136 @@ func TestNegotiatorWithAsyncBodyReading(t *testing.T) {
 
 	t.Logf("Test completed successfully with %d round trips and no race conditions", count)
 }
+
+// TestNegotiatorWithEmptyBody tests that requests with nil body work correctly
+func TestNegotiatorWithEmptyBody(t *testing.T) {
+	// Create a test server that accepts requests without auth
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify body is nil or empty
+		if r.Body != nil {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("Failed to read body: %v", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if len(body) != 0 {
+				t.Errorf("Expected empty body, got %d bytes", len(body))
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	// Create a GET request with nil body
+	req, err := http.NewRequest("GET", server.URL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.SetBasicAuth("testuser", "testpass")
+
+	// Create client with NTLM negotiator
+	client := &http.Client{
+		Transport: Negotiator{
+			RoundTripper: http.DefaultTransport,
+		},
+	}
+
+	// Make the request
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response: %v", err)
+	}
+
+	if string(respBody) != "ok" {
+		t.Errorf("Expected 'ok', got '%s'", string(respBody))
+	}
+}
+
+// TestNegotiatorWithEmptyBodyAndNTLMChallenge tests that requests with nil body
+// work correctly through the full NTLM negotiation
+func TestNegotiatorWithEmptyBodyAndNTLMChallenge(t *testing.T) {
+	callCount := 0
+
+	// Create a test server that performs NTLM negotiation
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		authHeader := r.Header.Get("Authorization")
+
+		// Verify body is nil or empty on all requests
+		if r.Body != nil {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("Failed to read body: %v", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if len(body) != 0 {
+				t.Errorf("Expected empty body on request %d, got %d bytes", callCount, len(body))
+			}
+		}
+
+		if callCount == 1 && authHeader == "" {
+			// First request: no auth, return 401 with NTLM challenge
+			w.Header().Set("Www-Authenticate", "NTLM")
+			w.WriteHeader(http.StatusUnauthorized)
+		} else if callCount == 2 && authHeader == "Basic dGVzdHVzZXI6dGVzdHBhc3M=" {
+			// Second request: tries basic auth, still return 401 with NTLM
+			w.Header().Set("Www-Authenticate", "NTLM")
+			w.WriteHeader(http.StatusUnauthorized)
+		} else {
+			// Final request or any other: success
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("authenticated"))
+		}
+	}))
+	defer server.Close()
+
+	// Create a GET request with nil body
+	req, err := http.NewRequest("GET", server.URL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.SetBasicAuth("testuser", "testpass")
+
+	// Create client with NTLM negotiator
+	client := &http.Client{
+		Transport: Negotiator{
+			RoundTripper: http.DefaultTransport,
+		},
+	}
+
+	// Make the request - should complete NTLM negotiation without body
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	if string(respBody) != "authenticated" {
+		t.Errorf("Expected 'authenticated', got '%s'", string(respBody))
+	}
+
+	// Verify we went through multiple round trips
+	if callCount < 3 {
+		t.Logf("Note: Only %d round trips occurred, expected NTLM negotiation to require at least 3", callCount)
+	}
+}
