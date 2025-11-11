@@ -197,14 +197,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 		return originalResp, nil
 	}
 
-	// Server requested Negotiate/NTLM.
-
-	// Rewind the body, we will resend it.
-	if body.rewind() != nil {
-		return originalResp, nil
-	}
-
-	// Start NTLM/Negotiate handshake
+	// Server requested Negotiate/NTLM, start handshake
 
 	// First step: send negotiate message
 	resp = clientHandshake(rt, req, resauth.schema, id)
@@ -223,7 +216,6 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	drainResponse(resp)
 
 	// Second step: process challenge and resend the original body with the authenticate message
-	req.Body = body
 	resp = completeHandshake(rt, resauth, req, id)
 	if resp == nil {
 		return originalResp, nil
@@ -246,14 +238,26 @@ func drainResponse(res *http.Response) {
 	_ = res.Body.Close()
 }
 
+func rewindBody(req *http.Request) error {
+	if req.Body == nil {
+		return nil
+	}
+	if nb, ok := req.Body.(*negotiatorBody); ok {
+		return nb.rewind()
+	}
+	return nil
+}
+
 func clientHandshake(rt http.RoundTripper, req *http.Request, schema string, id identity) *http.Response {
+	if rewindBody(req) != nil {
+		return nil
+	}
 	_, domain, _ := GetDomain(id.username)
 	auth, err := NewNegotiateMessage(domain, "")
 	if err != nil {
 		return nil
 	}
 	req.Header.Set("Authorization", schema+" "+base64.StdEncoding.EncodeToString(auth))
-	req.Body = nil
 	res, err := rt.RoundTrip(req)
 	if err != nil {
 		return nil
@@ -262,6 +266,9 @@ func clientHandshake(rt http.RoundTripper, req *http.Request, schema string, id 
 }
 
 func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Request, id identity) *http.Response {
+	if rewindBody(req) != nil {
+		return nil
+	}
 	challenge, err := resauth.token()
 	if err != nil {
 		return nil

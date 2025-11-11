@@ -718,14 +718,8 @@ func TestNegotiatorBasicToNTLMUpgrade(t *testing.T) {
 			return
 		}
 
-		if callCount == 3 {
-			if len(body) != 0 {
-				t.Errorf("Expected empty body on request %d, got %d bytes", callCount, len(body))
-			}
-		} else {
-			if !bytes.Equal(body, testData) {
-				t.Errorf("Body mismatch on request %d: expected %q, got %q", callCount, testData, body)
-			}
+		if !bytes.Equal(body, testData) {
+			t.Errorf("Body mismatch on request %d: expected %q, got %q", callCount, testData, body)
 		}
 
 		if callCount == 1 {
