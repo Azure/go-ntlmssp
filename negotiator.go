@@ -141,6 +141,9 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	// that require resending the body multiple times during the NTLM handshake.
 	body, err := newNegotiatorBody(req.Body)
 	if err != nil {
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
 		return nil, err
 	}
 	defer body.close()
