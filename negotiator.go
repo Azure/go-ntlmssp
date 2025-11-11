@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 )
 
 // negotiatorBody wraps an io.ReadSeeker to allow waiting for its closure
@@ -17,7 +16,6 @@ import (
 type negotiatorBody struct {
 	body     io.ReadSeeker
 	closed   chan struct{}
-	once     sync.Once
 	startPos int64
 }
 
@@ -37,7 +35,7 @@ func newNegotiatorBody(body io.Reader) (*negotiatorBody, error) {
 			// Seeking succeeded, use the seekable body directly
 			return &negotiatorBody{
 				body:     seeker,
-				closed:   make(chan struct{}),
+				closed:   make(chan struct{}, 1),
 				startPos: startPos,
 			}, nil
 		}
@@ -50,7 +48,7 @@ func newNegotiatorBody(body io.Reader) (*negotiatorBody, error) {
 	}
 	return &negotiatorBody{
 		body:   bytes.NewReader(data),
-		closed: make(chan struct{}),
+		closed: make(chan struct{}, 1),
 	}, nil
 }
 
@@ -68,9 +66,11 @@ func (b *negotiatorBody) Close() error {
 	if b == nil {
 		return nil
 	}
-	b.once.Do(func() {
-		close(b.closed)
-	})
+	select {
+	case b.closed <- struct{}{}:
+	default:
+		// Already signaled
+	}
 	return nil
 }
 
@@ -89,6 +89,7 @@ func (b *negotiatorBody) rewind() error {
 	if b == nil {
 		return nil
 	}
+	// Wait for the body to be closed before rewinding
 	<-b.closed
 	_, err := b.body.Seek(b.startPos, io.SeekStart)
 	return err
