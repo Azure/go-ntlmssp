@@ -691,9 +691,9 @@ func TestNegotiatorWithEmptyBodyAndNTLMChallenge(t *testing.T) {
 		t.Errorf("Expected 'authenticated', got '%s'", string(respBody))
 	}
 
-	// When Basic auth fails and NTLM is requested,
-	// but we have an empty body, the negotiator returns the 401 response
-	// instead of attempting full NTLM negotiation
+	// The test verifies that NTLM negotiation completes successfully in two round trips
+	// (anonymous and NTLM negotiate), even with an empty body,
+	// because the server accepts the NTLM negotiate message without requiring a challenge response.
 	if callCount != 2 {
 		t.Errorf("Note: %d round trips occurred (expected 2: anonymous + Basic)", callCount)
 	}
@@ -1097,13 +1097,13 @@ func TestNegotiatorInvalidChallengeToken(t *testing.T) {
 		t.Errorf("Expected status 401 (invalid token), got %d", resp.StatusCode)
 	}
 
-	// Read response body (will be empty since it was drained before returning)
+	// Read response body (will be empty because the negotiator returns the original 401 response from the first request, which had no body)
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("Failed to read response: %v", err)
 	}
 
-	// The response body was drained before being returned to the client
+	// The response body is empty because the returned response is the original 401 from the initial request, not the one with the invalid token
 	if len(respBody) != 0 {
 		t.Errorf("Unexpected response body: '%s'", string(respBody))
 	}
@@ -1167,13 +1167,13 @@ func TestNegotiatorEmptyChallengeToken(t *testing.T) {
 		t.Errorf("Expected status 401 (empty challenge), got %d", resp.StatusCode)
 	}
 
-	// Read response body (will be empty since it was drained before returning)
+	// Read response body (will be empty because the negotiator returns the original 401 response from the first request, which had no body)
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("Failed to read response: %v", err)
 	}
 
-	// The response body was drained before being returned to the client
+	// The response body is empty because the returned response is the original 401 from the initial request, not because it was drained
 	if len(respBody) != 0 {
 		t.Errorf("Unexpected response body: '%s'", string(respBody))
 	}

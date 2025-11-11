@@ -187,6 +187,8 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 		// Server upgraded from Basic to NTLM/Negotiate (rare but possible)
 		drainResponse(resp)
+		// After Basic-to-NTLM upgrade, update originalResp to the NTLM-triggering response
+		originalResp = resp
 	} else if !resauth.isNTLM() {
 		// No NTLM/Negotiate requested, return the response as is
 		return originalResp, nil
