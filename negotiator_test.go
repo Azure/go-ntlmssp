@@ -429,9 +429,10 @@ func TestNegotiatorWithUnseekableReadSeeker(t *testing.T) {
 	}
 }
 
-// asyncRoundTripper simulates a RoundTripper that continues reading the body
-// on a background goroutine after RoundTrip returns, which is allowed by the
-// http.RoundTripper contract.
+// asyncRoundTripper simulates a RoundTripper that continues reading the request body
+// and headers on background goroutines after RoundTrip returns, which is allowed by
+// the http.RoundTripper contract. This tests for race conditions in concurrent access
+// to both the request body and headers.
 type asyncRoundTripper struct {
 	// requestCount tracks how many times RoundTrip has been called
 	requestCount atomic.Int32
@@ -441,7 +442,7 @@ type asyncRoundTripper struct {
 func (a *asyncRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	count := a.requestCount.Add(1)
 
-	// Simulate async body reading
+	// Simulate async body reading and header access
 	bodyCopy := &bytes.Buffer{}
 	if req.Body != nil {
 		// Start reading the body on a background goroutine
@@ -460,6 +461,20 @@ func (a *asyncRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 		// Return immediately (before background goroutine finishes)
 		// This simulates the behavior that can cause races
 	}
+
+	// Simulate async header reading that continues after RoundTrip returns
+	// This tests the race condition where Negotiator modifies headers while
+	// the wrapped RoundTripper is still reading them on another goroutine
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		// Access request headers in background goroutine
+		_ = req.Header.Get("Authorization")
+		_ = req.Header.Get("Content-Type")
+		_ = req.Header.Get("User-Agent")
+		// Also access other request fields that might be read
+		_ = req.Method
+		_ = req.URL.String()
+	}()
 
 	authHeader := req.Header.Get("Authorization")
 
@@ -499,12 +514,16 @@ func (a *asyncRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 	}, nil
 }
 
-// TestNegotiatorWithAsyncBodyReading tests that the Negotiator correctly waits
-// for the wrapped RoundTripper to close the body before reusing it, preventing
-// race conditions when the RoundTripper reads the body asynchronously.
-// This test specifically covers the case where a RoundTripper implementation
-// reads the request body on a background goroutine that continues after
-// RoundTrip returns, which is allowed by the http.RoundTripper contract.
+// TestNegotiatorWithAsyncBodyReading tests that the Negotiator correctly handles
+// race conditions when the wrapped RoundTripper accesses the request on background
+// goroutines after RoundTrip returns, which is allowed by the http.RoundTripper contract.
+// This test covers two race conditions:
+//  1. Body reading: The wrapped RoundTripper reads the request body on a background
+//     goroutine. Without the closeWaiter fix, this would race with Negotiator seeking
+//     and reusing the body for the next request.
+//  2. Header reading: The wrapped RoundTripper reads request headers on a background
+//     goroutine. Without cloning the request, this would race with Negotiator modifying
+//     headers for the next request.
 func TestNegotiatorWithAsyncBodyReading(t *testing.T) {
 	testData := []byte("test data that will be read asynchronously")
 
@@ -522,11 +541,6 @@ func TestNegotiatorWithAsyncBodyReading(t *testing.T) {
 	// Create Negotiator with the async RoundTripper
 	negotiator := Negotiator{RoundTripper: asyncRT}
 
-	// Make the request - this will trigger multiple round trips with body reuse
-	// Without the closeWaiter fix, this would cause a race condition where:
-	// 1. RoundTrip returns while background goroutine is still reading body
-	// 2. Negotiator immediately seeks and reuses the body
-	// 3. Background goroutine and next RoundTrip both access body concurrently
 	resp, err := negotiator.RoundTrip(req)
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
