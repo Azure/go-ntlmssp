@@ -173,22 +173,22 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 			return originalResp, nil
 		}
 		req.SetBasicAuth(id.username, id.password)
-		res1, err := rt.RoundTrip(req)
+		resp, err := rt.RoundTrip(req)
 		if err != nil {
 			return originalResp, nil
 		}
-		if res1.StatusCode != http.StatusUnauthorized {
+		if resp.StatusCode != http.StatusUnauthorized {
 			// Basic auth succeeded, return the new response
 			drainResponse(originalResp)
-			return res1, nil
+			return resp, nil
 		}
-		resauth = newAuthHeader(res1.Header)
+		resauth = newAuthHeader(resp.Header)
 		if !resauth.isNTLM() {
 			// No NTLM/Negotiate requested, return the response as is
-			return res1, nil
+			return resp, nil
 		}
 		// Server upgraded from Basic to NTLM/Negotiate (rare but possible)
-		drainResponse(res1)
+		drainResponse(resp)
 	} else if !resauth.isNTLM() {
 		// No NTLM/Negotiate requested, return the response as is
 		return originalResp, nil
