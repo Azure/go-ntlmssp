@@ -150,7 +150,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	}
 
 	resauth := newAuthHeader(res.Header)
-	if !resauth.IsNTLM() {
+	if !resauth.isNTLM() {
 		// Unauthorized, Negotiate not requested, let's try with basic auth
 		_, _ = io.Copy(io.Discard, res.Body)
 		res.Body.Close()
@@ -162,7 +162,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 			return res, err
 		}
 		resauth = newAuthHeader(res.Header)
-		if !resauth.IsNTLM() {
+		if !resauth.isNTLM() {
 			// Nothing to negotiate, let client deal with response
 			return res, err
 		}
@@ -174,18 +174,18 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	if err := body.rewind(); err != nil {
 		return nil, err
 	}
-	res, done, err = doRequest(req, rt, resauth.Schema(), id, nil)
+	res, done, err = doRequest(req, rt, resauth.schema, id, nil)
 	if done {
 		return res, err
 	}
 
 	// Server should have responded with a challenge
 	resauth = newAuthHeader(res.Header)
-	challengeMessage, err := resauth.GetData()
+	challengeMessage, err := resauth.token()
 	if err != nil {
 		return nil, err
 	}
-	if !resauth.IsNTLM() || len(challengeMessage) == 0 {
+	if !resauth.isNTLM() || len(challengeMessage) == 0 {
 		// Negotiation failed, let client deal with response
 		return res, nil
 	}
@@ -196,7 +196,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (res *http.Response, err error)
 	if err := body.rewind(); err != nil {
 		return nil, err
 	}
-	res, _, err = doRequest(req, rt, resauth.Schema(), id, challengeMessage)
+	res, _, err = doRequest(req, rt, resauth.schema, id, challengeMessage)
 	return res, err
 }
 
