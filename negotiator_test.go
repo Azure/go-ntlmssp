@@ -429,9 +429,10 @@ func TestNegotiatorWithUnseekableReadSeeker(t *testing.T) {
 	}
 }
 
-// asyncRoundTripper simulates a RoundTripper that continues reading the body
-// on a background goroutine after RoundTrip returns, which is allowed by the
-// http.RoundTripper contract.
+// asyncRoundTripper simulates a RoundTripper that continues reading the request body
+// and headers on background goroutines after RoundTrip returns, which is allowed by
+// the http.RoundTripper contract. This tests for race conditions in concurrent access
+// to both the request body and headers.
 type asyncRoundTripper struct {
 	// requestCount tracks how many times RoundTrip has been called
 	requestCount atomic.Int32
@@ -441,12 +442,20 @@ type asyncRoundTripper struct {
 func (a *asyncRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	count := a.requestCount.Add(1)
 
-	// Simulate async body reading
+	// Simulate async body reading and header access
 	bodyCopy := &bytes.Buffer{}
 	if req.Body != nil {
 		// Start reading the body on a background goroutine
 		go func() {
 			defer req.Body.Close()
+			time.Sleep(30 * time.Millisecond)
+			// Access request headers in background goroutine
+			_ = req.Header.Get("Authorization")
+			_ = req.Header.Get("Content-Type")
+			_ = req.Header.Get("User-Agent")
+			// Also access other request fields that might be read
+			_ = req.Method
+			_ = req.URL.String()
 			// Simulate slow reading - this is key to testing the race condition
 			// Without the closeWaiter fix, this would race with the body being
 			// seeked and reused in the next request
@@ -499,12 +508,16 @@ func (a *asyncRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 	}, nil
 }
 
-// TestNegotiatorWithAsyncBodyReading tests that the Negotiator correctly waits
-// for the wrapped RoundTripper to close the body before reusing it, preventing
-// race conditions when the RoundTripper reads the body asynchronously.
-// This test specifically covers the case where a RoundTripper implementation
-// reads the request body on a background goroutine that continues after
-// RoundTrip returns, which is allowed by the http.RoundTripper contract.
+// TestNegotiatorWithAsyncBodyReading tests that the Negotiator correctly handles
+// race conditions when the wrapped RoundTripper accesses the request on background
+// goroutines after RoundTrip returns, which is allowed by the http.RoundTripper contract.
+// This test covers two race conditions:
+//  1. Body reading: The wrapped RoundTripper reads the request body on a background
+//     goroutine. Without the closeWaiter fix, this would race with Negotiator seeking
+//     and reusing the body for the next request.
+//  2. Header reading: The wrapped RoundTripper reads request headers on a background
+//     goroutine. Without cloning the request, this would race with Negotiator modifying
+//     headers for the next request.
 func TestNegotiatorWithAsyncBodyReading(t *testing.T) {
 	testData := []byte("test data that will be read asynchronously")
 
@@ -522,11 +535,6 @@ func TestNegotiatorWithAsyncBodyReading(t *testing.T) {
 	// Create Negotiator with the async RoundTripper
 	negotiator := Negotiator{RoundTripper: asyncRT}
 
-	// Make the request - this will trigger multiple round trips with body reuse
-	// Without the closeWaiter fix, this would cause a race condition where:
-	// 1. RoundTrip returns while background goroutine is still reading body
-	// 2. Negotiator immediately seeks and reuses the body
-	// 3. Background goroutine and next RoundTrip both access body concurrently
 	resp, err := negotiator.RoundTrip(req)
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
@@ -556,4 +564,137 @@ func TestNegotiatorWithAsyncBodyReading(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	t.Logf("Test completed successfully with %d round trips and no race conditions", count)
+}
+
+// TestNegotiatorWithEmptyBody tests that requests with nil body work correctly
+func TestNegotiatorWithEmptyBody(t *testing.T) {
+	// Create a test server that accepts requests without auth
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify body is nil or empty
+		if r.Body != nil {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("Failed to read body: %v", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if len(body) != 0 {
+				t.Errorf("Expected empty body, got %d bytes", len(body))
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	// Create a GET request with nil body
+	req, err := http.NewRequest("GET", server.URL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.SetBasicAuth("testuser", "testpass")
+
+	// Create client with NTLM negotiator
+	client := &http.Client{
+		Transport: Negotiator{
+			RoundTripper: http.DefaultTransport,
+		},
+	}
+
+	// Make the request
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response: %v", err)
+	}
+
+	if string(respBody) != "ok" {
+		t.Errorf("Expected 'ok', got '%s'", string(respBody))
+	}
+}
+
+// TestNegotiatorWithEmptyBodyAndNTLMChallenge tests that requests with nil body
+// work correctly through the full NTLM negotiation
+func TestNegotiatorWithEmptyBodyAndNTLMChallenge(t *testing.T) {
+	callCount := 0
+
+	// Create a test server that performs NTLM negotiation
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		authHeader := r.Header.Get("Authorization")
+
+		// Verify body is nil or empty on all requests
+		if r.Body != nil {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("Failed to read body: %v", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if len(body) != 0 {
+				t.Errorf("Expected empty body on request %d, got %d bytes", callCount, len(body))
+			}
+		}
+
+		if callCount == 1 && authHeader == "" {
+			// First request: no auth, return 401 with NTLM challenge
+			w.Header().Set("Www-Authenticate", "NTLM")
+			w.WriteHeader(http.StatusUnauthorized)
+		} else if callCount == 2 && authHeader == "Basic dGVzdHVzZXI6dGVzdHBhc3M=" {
+			// Second request: tries basic auth, still return 401 with NTLM
+			w.Header().Set("Www-Authenticate", "NTLM")
+			w.WriteHeader(http.StatusUnauthorized)
+		} else {
+			// Final request or any other: success
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("authenticated"))
+		}
+	}))
+	defer server.Close()
+
+	// Create a GET request with nil body
+	req, err := http.NewRequest("GET", server.URL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.SetBasicAuth("testuser", "testpass")
+
+	// Create client with NTLM negotiator
+	client := &http.Client{
+		Transport: Negotiator{
+			RoundTripper: http.DefaultTransport,
+		},
+	}
+
+	// Make the request - should complete NTLM negotiation without body
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	if string(respBody) != "authenticated" {
+		t.Errorf("Expected 'authenticated', got '%s'", string(respBody))
+	}
+
+	// Verify we went through multiple round trips
+	if callCount < 3 {
+		t.Logf("Note: Only %d round trips occurred, expected NTLM negotiation to require at least 3", callCount)
+	}
 }
