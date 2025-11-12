@@ -99,7 +99,7 @@ func splitNameForAuth(username string) (user, domain string) {
 
 // AuthenticateMessageOptions contains optional parameters for the Authenticate message.
 type AuthenticateMessageOptions struct {
-	Workstation string
+	WorkstationName string
 
 	// PasswordHashed indicates whether the provided password is already hashed.
 	// If true, the password is expected to be in hexadecimal format.
@@ -130,7 +130,7 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 	}
 	am.UserName, am.DomainName = splitNameForAuth(username)
 	if options != nil {
-		am.Workstation = options.Workstation
+		am.Workstation = options.WorkstationName
 	}
 
 	timestamp := cm.TargetInfo[avIDMsvAvTimestamp]
