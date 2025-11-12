@@ -12,9 +12,9 @@ import (
 	"github.com/Azure/go-ntlmssp"
 )
 
-// Example demonstrates basic HTTPS authentication using NTLM.
+// ExampleNegotiator demonstrates basic HTTPS authentication using NTLM.
 // The library works the same way with HTTP - just use http:// URLs instead.
-func Example() {
+func ExampleNegotiator() {
 	url := "https://ntlm-protected-server.example.com/resource"
 	username := "DOMAIN\\username" // or "username@domain.com" for UPN format
 	password := "your-password"
@@ -40,8 +40,8 @@ func Example() {
 	fmt.Printf("Status: %s\n", resp.Status)
 }
 
-// Example_customTLS demonstrates HTTPS authentication with custom TLS configuration.
-func Example_customTLS() {
+// ExampleNegotiator_customTLS demonstrates HTTPS authentication with custom TLS configuration.
+func ExampleNegotiator_customTLS() {
 	url := "https://ntlm-protected-server.example.com/resource"
 	username := "DOMAIN\\username" // or "username@domain.com" for UPN format
 	password := "your-password"
