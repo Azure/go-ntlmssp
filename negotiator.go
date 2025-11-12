@@ -95,7 +95,11 @@ func (b *negotiatorBody) rewind() error {
 	return err
 }
 
-// GetDomain extracts the domain from the username if present.
+// GetDomain extracts the user domain from the username if present.
+//
+// Deprecated: Pass the username directly to [ProcessChallenge], it will handle domain extraction.
+// Don't pass the resulting domain to [NewNegotiateMessage], that function expects the client
+// machine domain, not the user domain.
 func GetDomain(username string) (user string, domain string, domainNeeded bool) {
 	if strings.Contains(username, "\\") {
 		ucomponents := strings.SplitN(username, "\\", 2)
@@ -252,8 +256,7 @@ func clientHandshake(rt http.RoundTripper, req *http.Request, schema string, id 
 	if rewindBody(req) != nil {
 		return nil
 	}
-	_, domain, _ := GetDomain(id.username)
-	auth, err := NewNegotiateMessage(domain, "")
+	auth, err := NewNegotiateMessage("", "")
 	if err != nil {
 		return nil
 	}
@@ -278,8 +281,7 @@ func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Reque
 		// otherwise the negotiation is over.
 		return nil
 	}
-	user, _, domainNeeded := GetDomain(id.username)
-	auth, err := ProcessChallenge(challenge, user, id.password, domainNeeded)
+	auth, err := ProcessChallenge(challenge, id.username, id.password, false)
 	if err != nil {
 		return nil
 	}

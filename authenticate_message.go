@@ -17,7 +17,7 @@ type authenicateMessage struct {
 	LmChallengeResponse []byte
 	NtChallengeResponse []byte
 
-	TargetName string
+	DomainName string
 	UserName   string
 
 	// only set if negotiateFlag_NTLMSSP_NEGOTIATE_KEY_EXCH
@@ -32,7 +32,7 @@ type authenticateMessageFields struct {
 	messageHeader
 	LmChallengeResponse varField
 	NtChallengeResponse varField
-	TargetName          varField
+	DomainName          varField
 	UserName            varField
 	Workstation         varField
 	_                   [8]byte
@@ -44,7 +44,7 @@ func (m *authenicateMessage) MarshalBinary() ([]byte, error) {
 		return nil, errors.New("only unicode is supported")
 	}
 
-	target, user := toUnicode(m.TargetName), toUnicode(m.UserName)
+	domain, user := toUnicode(m.DomainName), toUnicode(m.UserName)
 	workstation := toUnicode("")
 
 	ptr := binary.Size(&authenticateMessageFields{})
@@ -53,7 +53,7 @@ func (m *authenicateMessage) MarshalBinary() ([]byte, error) {
 		NegotiateFlags:      m.NegotiateFlags,
 		LmChallengeResponse: newVarField(&ptr, len(m.LmChallengeResponse)),
 		NtChallengeResponse: newVarField(&ptr, len(m.NtChallengeResponse)),
-		TargetName:          newVarField(&ptr, len(target)),
+		DomainName:          newVarField(&ptr, len(domain)),
 		UserName:            newVarField(&ptr, len(user)),
 		Workstation:         newVarField(&ptr, len(workstation)),
 	}
@@ -70,7 +70,7 @@ func (m *authenicateMessage) MarshalBinary() ([]byte, error) {
 	if err := binary.Write(&b, binary.LittleEndian, &m.NtChallengeResponse); err != nil {
 		return nil, err
 	}
-	if err := binary.Write(&b, binary.LittleEndian, &target); err != nil {
+	if err := binary.Write(&b, binary.LittleEndian, &domain); err != nil {
 		return nil, err
 	}
 	if err := binary.Write(&b, binary.LittleEndian, &user); err != nil {
@@ -83,10 +83,23 @@ func (m *authenicateMessage) MarshalBinary() ([]byte, error) {
 	return b.Bytes(), nil
 }
 
-// ProcessChallenge crafts an AUTHENTICATE message in response to the CHALLENGE message
-// that was received from the server
-func ProcessChallenge(challengeMessageData []byte, user, password string, domainNeeded bool) ([]byte, error) {
-	if user == "" && password == "" {
+func splitNameForAuth(username string) (user, domain string) {
+	if strings.Contains(username, "\\") {
+		ucomponents := strings.SplitN(username, "\\", 2)
+		domain = ucomponents[0]
+		user = ucomponents[1]
+	} else if strings.Contains(username, "@") {
+		user = username
+	} else {
+		user = username
+	}
+	return user, domain
+}
+
+// ProcessChallenge crafts an AUTHENTICATE message in response to the CHALLENGE message that was received from the server.
+// DomainNeeded is ignored, as the function extracts the domain from the username if needed.
+func ProcessChallenge(challengeMessageData []byte, username, password string, domainNeeded bool) ([]byte, error) {
+	if username == "" && password == "" {
 		return nil, errors.New("anonymous authentication not supported")
 	}
 
@@ -102,15 +115,10 @@ func ProcessChallenge(challengeMessageData []byte, user, password string, domain
 		return nil, errors.New("key exchange requested but not supported (NTLMSSP_NEGOTIATE_KEY_EXCH)")
 	}
 
-	if !domainNeeded {
-		cm.TargetName = ""
-	}
-
 	am := authenicateMessage{
-		UserName:       user,
-		TargetName:     cm.TargetName,
 		NegotiateFlags: cm.NegotiateFlags,
 	}
+	am.UserName, am.DomainName = splitNameForAuth(username)
 
 	timestamp := cm.TargetInfo[avIDMsvAvTimestamp]
 	if timestamp == nil { // no time sent, take current time
@@ -125,7 +133,7 @@ func ProcessChallenge(challengeMessageData []byte, user, password string, domain
 		return nil, err
 	}
 
-	ntlmV2Hash := getNtlmV2Hash(password, user, cm.TargetName)
+	ntlmV2Hash := getNtlmV2Hash(password, am.UserName, am.DomainName)
 
 	am.NtChallengeResponse = computeNtlmV2Response(ntlmV2Hash,
 		cm.ServerChallenge[:], clientChallenge, timestamp, cm.TargetInfoRaw)
@@ -137,8 +145,8 @@ func ProcessChallenge(challengeMessageData []byte, user, password string, domain
 	return am.MarshalBinary()
 }
 
-func ProcessChallengeWithHash(challengeMessageData []byte, user, hash string) ([]byte, error) {
-	if user == "" && hash == "" {
+func ProcessChallengeWithHash(challengeMessageData []byte, username, hash string) ([]byte, error) {
+	if username == "" && hash == "" {
 		return nil, errors.New("anonymous authentication not supported")
 	}
 
@@ -155,10 +163,9 @@ func ProcessChallengeWithHash(challengeMessageData []byte, user, hash string) ([
 	}
 
 	am := authenicateMessage{
-		UserName:       user,
-		TargetName:     cm.TargetName,
 		NegotiateFlags: cm.NegotiateFlags,
 	}
+	am.UserName, am.DomainName = splitNameForAuth(username)
 
 	timestamp := cm.TargetInfo[avIDMsvAvTimestamp]
 	if timestamp == nil { // no time sent, take current time
@@ -181,7 +188,7 @@ func ProcessChallengeWithHash(challengeMessageData []byte, user, hash string) ([
 	if err != nil {
 		return nil, err
 	}
-	ntlmV2Hash := hmacMd5(hashBytes, toUnicode(strings.ToUpper(user)+cm.TargetName))
+	ntlmV2Hash := hmacMd5(hashBytes, toUnicode(strings.ToUpper(username)+am.DomainName))
 
 	am.NtChallengeResponse = computeNtlmV2Response(ntlmV2Hash,
 		cm.ServerChallenge[:], clientChallenge, timestamp, cm.TargetInfoRaw)
