@@ -124,6 +124,8 @@ func GetDomain(username string) (user string, domain string, domainNeeded bool) 
 // By default, no credentials will be sent to the server unless it requests
 // Basic authentication and [Negotiator.AllowBasicAuth] is set to true.
 type Negotiator struct {
+	// RoundTripper is the underlying round tripper to use.
+	// If nil, http.DefaultTransport is used.
 	http.RoundTripper
 
 	// AllowBasicAuth controls whether to send Basic authentication credentials
@@ -137,6 +139,16 @@ type Negotiator struct {
 	// Basic authentication sends the credentials in clear text and may be
 	// vulnerable to man-in-the-middle attacks and compromised servers.
 	AllowBasicAuth bool
+
+	// WorkstationDomain is the domain of the client machine.
+	// It is normally not needed to set this field.
+	// It is passed to the negotiate message.
+	WorkstationDomain string
+
+	// WorkstationName is the workstation name of the client machine.
+	// It is passed to the negotiate and authenticate messages.
+	// Useful for auditing purposes on the server side.
+	WorkstationName string
 }
 
 // RoundTrip sends the request to the server, handling any authentication
@@ -223,7 +235,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Server requested Negotiate/NTLM, start handshake
 
 	// First step: send negotiate message
-	resp = clientHandshake(rt, req, resauth.schema, id)
+	resp = clientHandshake(rt, req, resauth.schema, l.WorkstationDomain, l.WorkstationName)
 	if resp == nil {
 		return originalResp, nil
 	}
@@ -239,7 +251,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	drainResponse(resp)
 
 	// Second step: process challenge and resend the original body with the authenticate message
-	resp = completeHandshake(rt, resauth, req, id)
+	resp = completeHandshake(rt, resauth, req, id, l.WorkstationName)
 	if resp == nil {
 		return originalResp, nil
 	}
@@ -271,11 +283,11 @@ func rewindBody(req *http.Request) error {
 	return nil
 }
 
-func clientHandshake(rt http.RoundTripper, req *http.Request, schema string, id identity) *http.Response {
+func clientHandshake(rt http.RoundTripper, req *http.Request, schema string, domain, workstation string) *http.Response {
 	if rewindBody(req) != nil {
 		return nil
 	}
-	auth, err := NewNegotiateMessage("", "")
+	auth, err := NewNegotiateMessage(domain, workstation)
 	if err != nil {
 		return nil
 	}
@@ -287,7 +299,7 @@ func clientHandshake(rt http.RoundTripper, req *http.Request, schema string, id 
 	return res
 }
 
-func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Request, id identity) *http.Response {
+func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Request, id identity, workstation string) *http.Response {
 	if rewindBody(req) != nil {
 		return nil
 	}
@@ -300,7 +312,13 @@ func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Reque
 		// otherwise the negotiation is over.
 		return nil
 	}
-	auth, err := NewAuthenticateMessage(challenge, id.username, id.password, nil)
+	var opts *AuthenticateMessageOptions
+	if workstation != "" {
+		opts = &AuthenticateMessageOptions{
+			WorkstationName: workstation,
+		}
+	}
+	auth, err := NewAuthenticateMessage(challenge, id.username, id.password, opts)
 	if err != nil {
 		return nil
 	}

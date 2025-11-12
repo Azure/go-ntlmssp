@@ -6,6 +6,7 @@ package ntlmssp
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/binary"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1358,5 +1359,246 @@ func TestNegotiatorRejectsBasicAuthWhenDisabled(t *testing.T) {
 	// Should only have made 1 round trip (anonymous request, then stop)
 	if callCount != 1 {
 		t.Errorf("Expected exactly 1 round trip (Basic auth rejected), got %d", callCount)
+	}
+}
+
+// TestNegotiatorWorkstationAndDomainNames tests that the Negotiator correctly sends
+// workstation and domain names to the server when they are set
+func TestNegotiatorWorkstationAndDomainNames(t *testing.T) {
+	testCases := []struct {
+		name              string
+		workstationDomain string
+		workstationName   string
+		wantDomain        bool
+		wantWorkstation   bool
+	}{
+		{
+			name:              "Both workstation domain and name set",
+			workstationDomain: "TESTDOMAIN",
+			workstationName:   "TESTWORKSTATION",
+			wantDomain:        true,
+			wantWorkstation:   true,
+		},
+		{
+			name:              "Only workstation name set",
+			workstationDomain: "",
+			workstationName:   "TESTWORKSTATION",
+			wantDomain:        false,
+			wantWorkstation:   true,
+		},
+		{
+			name:              "Only workstation domain set",
+			workstationDomain: "TESTDOMAIN",
+			workstationName:   "",
+			wantDomain:        true,
+			wantWorkstation:   false,
+		},
+		{
+			name:              "Neither workstation domain nor name set",
+			workstationDomain: "",
+			workstationName:   "",
+			wantDomain:        false,
+			wantWorkstation:   false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var negotiateMsg, authenticateMsg []byte
+
+			// Create a test server that performs NTLM negotiation and captures the messages
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				authHeader := r.Header.Get("Authorization")
+
+				if authHeader == "" {
+					// First request: no auth, return 401 with NTLM challenge
+					w.Header().Set("Www-Authenticate", "NTLM")
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+
+				if bytes.HasPrefix([]byte(authHeader), []byte("NTLM ")) {
+					// Parse the NTLM message
+					msgData := authHeader[5:] // Skip "NTLM "
+					msg, err := io.ReadAll(bytes.NewReader([]byte(msgData)))
+					if err != nil {
+						t.Errorf("Failed to read auth message: %v", err)
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+
+					// Try to determine message type by checking if it's a negotiate or authenticate message
+					// Negotiate messages are typically shorter (around 40 bytes base64 encoded)
+					// Authenticate messages are longer
+					if len(negotiateMsg) == 0 {
+						// This is the negotiate message
+						negotiateMsg = msg
+						// Send back a challenge
+						// Create a minimal valid challenge message
+						challenge, err := createTestChallenge()
+						if err != nil {
+							t.Errorf("Failed to create challenge: %v", err)
+							w.WriteHeader(http.StatusInternalServerError)
+							return
+						}
+						w.Header().Set("Www-Authenticate", "NTLM "+challenge)
+						w.WriteHeader(http.StatusUnauthorized)
+						return
+					}
+
+					// This is the authenticate message
+					authenticateMsg = msg
+					// Accept authentication
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("authenticated"))
+					return
+				}
+
+				// Unexpected auth type
+				w.WriteHeader(http.StatusBadRequest)
+			}))
+			defer server.Close()
+
+			// Create a GET request
+			req, err := http.NewRequest("GET", server.URL, nil)
+			if err != nil {
+				t.Fatalf("Failed to create request: %v", err)
+			}
+			req.SetBasicAuth("testuser", "testpass")
+
+			// Create client with NTLM negotiator
+			client := &http.Client{
+				Transport: Negotiator{
+					RoundTripper:      http.DefaultTransport,
+					WorkstationDomain: tc.workstationDomain,
+					WorkstationName:   tc.workstationName,
+				},
+			}
+
+			// Make the request
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("Request failed: %v", err)
+			}
+			defer resp.Body.Close()
+
+			// Verify we got a successful response
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("Expected status 200, got %d", resp.StatusCode)
+			}
+
+			// Now verify the negotiate message contains the expected workstation and domain
+			if len(negotiateMsg) > 0 {
+				verifyNegotiateMessage(t, negotiateMsg, tc.workstationDomain, tc.workstationName, tc.wantDomain, tc.wantWorkstation)
+			} else {
+				t.Error("No negotiate message was captured")
+			}
+
+			// Verify the authenticate message contains the expected workstation name
+			if len(authenticateMsg) > 0 && tc.wantWorkstation {
+				verifyAuthenticateMessage(t, authenticateMsg, tc.workstationName)
+			}
+		})
+	}
+}
+
+// createTestChallenge creates a minimal valid NTLM challenge message for testing
+func createTestChallenge() (string, error) {
+	// Create a minimal challenge message structure
+	// This is a simplified version for testing purposes
+	challenge := challengeMessageFields{
+		messageHeader:   newMessageHeader(2),
+		NegotiateFlags:  defaultFlags,
+		ServerChallenge: [8]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef},
+	}
+
+	buf := bytes.Buffer{}
+	if err := binary.Write(&buf, binary.LittleEndian, &challenge); err != nil {
+		return "", err
+	}
+
+	// Encode to base64
+	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
+}
+
+// verifyNegotiateMessage verifies that the negotiate message contains the expected flags and payload
+func verifyNegotiateMessage(t *testing.T, msgData []byte, expectedDomain, expectedWorkstation string, wantDomain, wantWorkstation bool) {
+	t.Helper()
+
+	// Decode base64
+	decoded, err := base64.StdEncoding.DecodeString(string(msgData))
+	if err != nil {
+		t.Errorf("Failed to decode negotiate message: %v", err)
+		return
+	}
+
+	// Parse the negotiate message
+	if len(decoded) < expMsgBodyLen {
+		t.Errorf("Negotiate message too short: got %d bytes, expected at least %d", len(decoded), expMsgBodyLen)
+		return
+	}
+
+	// Read negotiate flags (at offset 12)
+	flags := negotiateFlags(binary.LittleEndian.Uint32(decoded[12:16]))
+
+	// Check domain flag
+	hasDomainFlag := flags.Has(negotiateFlagNTLMSSPNEGOTIATEOEMDOMAINSUPPLIED)
+	if wantDomain && !hasDomainFlag {
+		t.Error("Expected NTLMSSP_NEGOTIATE_OEM_DOMAIN_SUPPLIED flag to be set, but it wasn't")
+	}
+	if !wantDomain && hasDomainFlag {
+		t.Error("Expected NTLMSSP_NEGOTIATE_OEM_DOMAIN_SUPPLIED flag to be unset, but it was set")
+	}
+
+	// Check workstation flag
+	hasWorkstationFlag := flags.Has(negotiateFlagNTLMSSPNEGOTIATEOEMWORKSTATIONSUPPLIED)
+	if wantWorkstation && !hasWorkstationFlag {
+		t.Error("Expected NTLMSSP_NEGOTIATE_OEM_WORKSTATION_SUPPLIED flag to be set, but it wasn't")
+	}
+	if !wantWorkstation && hasWorkstationFlag {
+		t.Error("Expected NTLMSSP_NEGOTIATE_OEM_WORKSTATION_SUPPLIED flag to be unset, but it was set")
+	}
+
+	// Verify the payload contains the domain and workstation if they were set
+	// The payload is in uppercase OEM format (ASCII) and appears after the fixed header
+	if wantDomain && expectedDomain != "" {
+		// Convert to uppercase as the negotiate message does
+		expectedUpper := []byte(strings.ToUpper(expectedDomain))
+		if !bytes.Contains(decoded[expMsgBodyLen:], expectedUpper) {
+			t.Errorf("Negotiate message payload does not contain expected domain %q", expectedDomain)
+		}
+	}
+
+	if wantWorkstation && expectedWorkstation != "" {
+		// Convert to uppercase as the negotiate message does
+		expectedUpper := []byte(strings.ToUpper(expectedWorkstation))
+		if !bytes.Contains(decoded[expMsgBodyLen:], expectedUpper) {
+			t.Errorf("Negotiate message payload does not contain expected workstation %q", expectedWorkstation)
+		}
+	}
+}
+
+// verifyAuthenticateMessage verifies that the authenticate message contains the expected workstation name
+func verifyAuthenticateMessage(t *testing.T, msgData []byte, expectedWorkstation string) {
+	t.Helper()
+
+	// Decode base64
+	decoded, err := base64.StdEncoding.DecodeString(string(msgData))
+	if err != nil {
+		t.Errorf("Failed to decode authenticate message: %v", err)
+		return
+	}
+
+	// Parse the authenticate message to extract workstation field
+	// The authenticate message structure has varFields for workstation
+	// For simplicity, we'll just check if the workstation name appears in the message
+	// (it will be in Unicode format)
+
+	// Convert expected workstation to unicode (UTF-16LE)
+	expectedUnicode := toUnicode(expectedWorkstation)
+
+	// Check if the unicode workstation name appears in the decoded message
+	if !bytes.Contains(decoded, expectedUnicode) {
+		t.Errorf("Authenticate message does not contain expected workstation name %q", expectedWorkstation)
 	}
 }
