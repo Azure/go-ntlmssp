@@ -72,4 +72,3 @@ func Example_customTLS() {
 
 	fmt.Printf("Status: %s\n", resp.Status)
 }
-
