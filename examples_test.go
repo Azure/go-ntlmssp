@@ -5,11 +5,9 @@ package ntlmssp_test
 
 import (
 	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 
 	"github.com/Azure/go-ntlmssp"
 )
@@ -43,39 +41,19 @@ func Example() {
 }
 
 // Example_customTLS demonstrates HTTPS authentication with custom TLS configuration.
-// Useful for self-signed certificates or custom CA certificates.
 func Example_customTLS() {
 	url := "https://ntlm-protected-server.example.com/resource"
 	username := "DOMAIN\\username" // or "username@domain.com" for UPN format
 	password := "your-password"
-	caCertFile := "/path/to/ca-cert.pem" // Optional: path to CA certificate
-
-	// Create TLS config
-	tlsConfig := &tls.Config{
-		MinVersion: tls.VersionTLS12,
-	}
-
-	// Option 1: Load custom CA certificate (for self-signed certs)
-	if caCertFile != "" {
-		caCert, err := os.ReadFile(caCertFile)
-		if err != nil {
-			log.Printf("Warning: Failed to read CA certificate: %v", err)
-		} else {
-			caCertPool := x509.NewCertPool()
-			if caCertPool.AppendCertsFromPEM(caCert) {
-				tlsConfig.RootCAs = caCertPool
-			}
-		}
-	}
-
-	// Option 2: Skip certificate verification (NOT recommended for production!)
-	// Uncomment the following line only for testing with self-signed certificates
-	// tlsConfig.InsecureSkipVerify = true
 
 	client := &http.Client{
 		Transport: ntlmssp.Negotiator{
 			RoundTripper: &http.Transport{
-				TLSClientConfig: tlsConfig,
+				TLSClientConfig: &tls.Config{
+					MinVersion: tls.VersionTLS12,
+				},
+				// Disable HTTP/2 to ensure NTLM works correctly
+				TLSNextProto: make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 			},
 		},
 	}
