@@ -16,8 +16,8 @@ import (
 	"github.com/Azure/go-ntlmssp/internal/md4"
 )
 
-func getNtlmV2Hash(password, username, target string) []byte {
-	return hmacMd5(getNtlmHash(password), toUnicode(strings.ToUpper(username)+target))
+func getNtlmV2Hash(password, username, domain string) []byte {
+	return hmacMd5(getNtlmHash(password), toUnicode(strings.ToUpper(username)+domain))
 }
 
 func getNtlmHash(password string) []byte {
