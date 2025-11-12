@@ -17,7 +17,11 @@ import (
 )
 
 func getNtlmV2Hash(password, username, domain string) []byte {
-	return hmacMd5(getNtlmHash(password), toUnicode(strings.ToUpper(username)+domain))
+	return getNtlmV2Hashed(getNtlmHash(password), username, domain)
+}
+
+func getNtlmV2Hashed(ntlmHash []byte, username, domain string) []byte {
+	return hmacMd5(ntlmHash, toUnicode(strings.ToUpper(username)+domain))
 }
 
 func getNtlmHash(password string) []byte {
