@@ -116,9 +116,28 @@ func GetDomain(username string) (user string, domain string, domainNeeded bool) 
 	return user, domain, domainNeeded
 }
 
-// Negotiator is a http.Roundtripper decorator that automatically
+// Negotiator is a [net/http.RoundTripper] decorator that automatically
 // converts basic authentication to NTLM/Negotiate authentication when appropriate.
-type Negotiator struct{ http.RoundTripper }
+//
+// The credentials must be set using [net/http.Request.SetBasicAuth] on a per-request basis.
+//
+// By default, no credentials will be sent to the server unless it requests
+// Basic authentication and [Negotiator.AllowBasicAuth] is set to true.
+type Negotiator struct {
+	http.RoundTripper
+
+	// AllowBasicAuth controls whether to send Basic authentication credentials
+	// if the server requests it.
+	//
+	// If false (default), Basic authentication requests are ignored
+	// and only NTLM/Negotiate authentication is performed.
+	// If true, Basic authentication requests are honored.
+	//
+	// Only set this to true if you trust the server you are connecting to.
+	// Basic authentication sends the credentials in clear text and may be
+	// vulnerable to man-in-the-middle attacks and compromised servers.
+	AllowBasicAuth bool
+}
 
 // RoundTrip sends the request to the server, handling any authentication
 // re-sends as needed.
@@ -170,7 +189,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	originalResp := resp
 
 	resauth := newAuthHeader(resp.Header)
-	if resauth.isBasic() {
+	if l.AllowBasicAuth && resauth.isBasic() {
 		// Basic auth requested instead of NTLM/Negotiate.
 		//
 		// Rewind the body, we will resend it.

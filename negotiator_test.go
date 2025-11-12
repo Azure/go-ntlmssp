@@ -5,9 +5,11 @@ package ntlmssp
 
 import (
 	"bytes"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -704,6 +706,7 @@ func TestNegotiatorWithEmptyBodyAndNTLMChallenge(t *testing.T) {
 func TestNegotiatorBasicToNTLMUpgrade(t *testing.T) {
 	testData := []byte("test request body")
 	callCount := 0
+	var negotiateMessageReceived bool
 
 	// Create a test server that first accepts Basic auth, then upgrades to NTLM
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -732,10 +735,26 @@ func TestNegotiatorBasicToNTLMUpgrade(t *testing.T) {
 			w.Header().Set("Www-Authenticate", "NTLM")
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = w.Write([]byte("upgrading to ntlm"))
-		} else {
+		} else if callCount == 3 && bytes.HasPrefix([]byte(authHeader), []byte("NTLM ")) {
+			// Third request: NTLM negotiate message
+			negotiateMessageReceived = true
+			// Verify the negotiate message doesn't contain credentials
+			token := strings.TrimPrefix(authHeader, "NTLM ")
+			decoded, err := base64.StdEncoding.DecodeString(token)
+			if err == nil {
+				if bytes.Contains(decoded, []byte("testuser")) {
+					t.Error("Negotiate message contains username")
+				}
+				if bytes.Contains(decoded, []byte("testpass")) {
+					t.Error("Negotiate message contains password")
+				}
+			}
 			// Final request: accept (would be NTLM in real scenario)
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("authenticated"))
+		} else {
+			// Unexpected request
+			w.WriteHeader(http.StatusBadRequest)
 		}
 	}))
 	defer server.Close()
@@ -750,7 +769,8 @@ func TestNegotiatorBasicToNTLMUpgrade(t *testing.T) {
 	// Create client with NTLM negotiator
 	client := &http.Client{
 		Transport: Negotiator{
-			RoundTripper: http.DefaultTransport,
+			RoundTripper:   http.DefaultTransport,
+			AllowBasicAuth: true,
 		},
 	}
 
@@ -782,6 +802,11 @@ func TestNegotiatorBasicToNTLMUpgrade(t *testing.T) {
 	// 3. Request with NTLM negotiate -> 200 OK (accepted without challenge in test)
 	if callCount != 3 {
 		t.Errorf("Expected exactly 3 round trips for Basic->NTLM upgrade, got %d", callCount)
+	}
+
+	// Verify we received and validated the negotiate message
+	if !negotiateMessageReceived {
+		t.Error("NTLM negotiate message was not received during Basic->NTLM upgrade")
 	}
 }
 
@@ -834,7 +859,8 @@ func TestNegotiatorBasicAuthOnly(t *testing.T) {
 	// Create client with NTLM negotiator
 	client := &http.Client{
 		Transport: Negotiator{
-			RoundTripper: http.DefaultTransport,
+			RoundTripper:   http.DefaultTransport,
+			AllowBasicAuth: true,
 		},
 	}
 
@@ -1219,7 +1245,8 @@ func TestNegotiatorResponseDraining(t *testing.T) {
 	// Create client with NTLM negotiator
 	client := &http.Client{
 		Transport: Negotiator{
-			RoundTripper: http.DefaultTransport,
+			RoundTripper:   http.DefaultTransport,
+			AllowBasicAuth: true,
 		},
 	}
 
@@ -1249,5 +1276,87 @@ func TestNegotiatorResponseDraining(t *testing.T) {
 	// We expect 2 round trips: anonymous (drained), then basic auth (success)
 	if callCount != 2 {
 		t.Errorf("Expected exactly 2 round trips (draining allows reuse), got %d", callCount)
+	}
+}
+
+// TestNegotiatorRejectsBasicAuthWhenDisabled tests that the Negotiator does not
+// send Basic authentication credentials when AllowBasicAuth is false (default)
+func TestNegotiatorRejectsBasicAuthWhenDisabled(t *testing.T) {
+	callCount := 0
+	var receivedBasicAuth bool
+
+	// Create a test server that only offers Basic auth (no NTLM)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		authHeader := r.Header.Get("Authorization")
+
+		// Track if we ever receive Basic auth credentials
+		if bytes.HasPrefix([]byte(authHeader), []byte("Basic ")) {
+			receivedBasicAuth = true
+		}
+
+		if callCount == 1 && authHeader == "" {
+			// First request: no auth, return 401 with only Basic auth
+			w.Header().Set("Www-Authenticate", "Basic realm=\"test\"")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte("basic auth required"))
+		} else if bytes.HasPrefix([]byte(authHeader), []byte("Basic ")) {
+			// Should NOT reach here when AllowBasicAuth is false
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("authenticated with basic"))
+		} else {
+			// Any other request
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte("still unauthorized"))
+		}
+	}))
+	defer server.Close()
+
+	// Create a request with credentials
+	testData := []byte("test body")
+	req, err := http.NewRequest("POST", server.URL, io.NopCloser(bytes.NewReader(testData)))
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.SetBasicAuth("testuser", "testpass")
+
+	// Create client with NTLM negotiator WITHOUT AllowBasicAuth
+	client := &http.Client{
+		Transport: Negotiator{
+			RoundTripper: http.DefaultTransport,
+			// AllowBasicAuth is false by default
+		},
+	}
+
+	// Make the request - should return 401 without trying Basic auth
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Should receive the original 401 response since Basic auth was rejected
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("Expected status 401 (Basic auth rejected), got %d", resp.StatusCode)
+	}
+
+	// Read response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response: %v", err)
+	}
+
+	if string(respBody) != "basic auth required" {
+		t.Errorf("Expected 'basic auth required', got '%s'", string(respBody))
+	}
+
+	// Verify Basic auth was never sent
+	if receivedBasicAuth {
+		t.Error("Basic auth credentials were sent even though AllowBasicAuth is false")
+	}
+
+	// Should only have made 1 round trip (anonymous request, then stop)
+	if callCount != 1 {
+		t.Errorf("Expected exactly 1 round trip (Basic auth rejected), got %d", callCount)
 	}
 }
