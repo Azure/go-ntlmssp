@@ -26,7 +26,9 @@ var defaultFlags = negotiateFlagNTLMSSPNEGOTIATETARGETINFO |
 	negotiateFlagNTLMSSPNEGOTIATE56 |
 	negotiateFlagNTLMSSPNEGOTIATE128 |
 	negotiateFlagNTLMSSPNEGOTIATEUNICODE |
-	negotiateFlagNTLMSSPNEGOTIATEEXTENDEDSESSIONSECURITY
+	negotiateFlagNTLMSSPNEGOTIATEEXTENDEDSESSIONSECURITY |
+	negotiateFlagNTLMSSPNEGOTIATENTLM |
+	negotiateFlagNTLMSSPNEGOTIATEALWAYSSIGN
 
 // NewNegotiateMessage creates a new NEGOTIATE message with the flags that this package supports.
 // Note that domain and workstation refer to the client machine, not the user that is authenticating.
