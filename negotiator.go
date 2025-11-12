@@ -281,7 +281,7 @@ func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Reque
 		// otherwise the negotiation is over.
 		return nil
 	}
-	auth, err := ProcessChallenge(challenge, id.username, id.password, false)
+	auth, err := NewAuthenticateMessage(challenge, id.username, id.password, nil)
 	if err != nil {
 		return nil
 	}
