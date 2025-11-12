@@ -52,8 +52,6 @@ func Example_customTLS() {
 				TLSClientConfig: &tls.Config{
 					MinVersion: tls.VersionTLS12,
 				},
-				// Disable HTTP/2 to ensure NTLM works correctly
-				TLSNextProto: make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 			},
 		},
 	}
