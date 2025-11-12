@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"testing"
-	"time"
 )
 
 // TestNTLM_E2E tests NTLM authentication against a real IIS server with Windows Authentication enabled
@@ -197,8 +196,8 @@ func TestNTLM_E2E(t *testing.T) {
 			},
 		}
 
-		ctx, cancel := context.WithTimeout(t.Context(), 1*time.Millisecond)
-		defer cancel()
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel() // Cancel immediately
 
 		req, err := http.NewRequestWithContext(ctx, "GET", testURL, nil)
 		if err != nil {
