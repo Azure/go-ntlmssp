@@ -329,3 +329,5 @@ func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Reque
 	}
 	return resp
 }
+
+var exportedSessionKey []byte

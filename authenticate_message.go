@@ -6,6 +6,7 @@ package ntlmssp
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/rc4"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -36,7 +37,7 @@ type authenticateMessageFields struct {
 	DomainName          varField
 	UserName            varField
 	Workstation         varField
-	_                   [8]byte
+	SessionKey          varField
 	NegotiateFlags      negotiateFlags
 }
 
@@ -57,9 +58,13 @@ func (m *authenicateMessage) MarshalBinary() ([]byte, error) {
 		DomainName:          newVarField(&ptr, len(domain)),
 		UserName:            newVarField(&ptr, len(user)),
 		Workstation:         newVarField(&ptr, len(workstation)),
+		SessionKey:          newVarField(&ptr, len(m.EncryptedRandomSessionKey)),
 	}
 
 	f.NegotiateFlags.Unset(negotiateFlagNTLMSSPNEGOTIATEVERSION)
+	// TODO maybe dont need
+	f.NegotiateFlags.Unset(negotiateFlagNTLMSSPNEGOTIATETARGETINFO)
+	f.NegotiateFlags.Unset(negotiateFlagNTLMSSPTARGETTYPESERVER)
 
 	b := bytes.Buffer{}
 	if err := binary.Write(&b, binary.LittleEndian, &f); err != nil {
@@ -78,6 +83,9 @@ func (m *authenicateMessage) MarshalBinary() ([]byte, error) {
 		return nil, err
 	}
 	if err := binary.Write(&b, binary.LittleEndian, &workstation); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(&b, binary.LittleEndian, &m.EncryptedRandomSessionKey); err != nil {
 		return nil, err
 	}
 
@@ -121,9 +129,6 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 	if cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATELMKEY) {
 		return nil, errors.New("only NTLM v2 is supported, but server requested v1 (NTLMSSP_NEGOTIATE_LM_KEY)")
 	}
-	if cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEKEYEXCH) {
-		return nil, errors.New("key exchange requested but not supported (NTLMSSP_NEGOTIATE_KEY_EXCH)")
-	}
 
 	am := authenicateMessage{
 		NegotiateFlags: cm.NegotiateFlags,
@@ -134,7 +139,7 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 	}
 
 	timestamp := cm.TargetInfo[avIDMsvAvTimestamp]
-	if timestamp == nil { // no time sent, take current time
+	if timestamp == nil || cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEKEYEXCH) { // no time sent, take current time
 		ft := uint64(time.Now().UnixNano()) / 100
 		ft += 116444736000000000 // add time between unix & windows offset
 		timestamp = make([]byte, 8)
@@ -168,6 +173,24 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 		am.LmChallengeResponse = computeLmV2Response(ntlmV2Hash,
 			cm.ServerChallenge[:], clientChallenge)
 	}
+
+	if cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEKEYEXCH) {
+		userSessionKey := hmacMd5(ntlmV2Hash, am.NtChallengeResponse)
+
+		cipher, err := rc4.NewCipher(userSessionKey)
+		if err != nil {
+			return nil, err
+		}
+
+		sessionKey := make([]byte, 16)
+		exportedSessionKey = []byte(rand.Text()[:16])
+		cipher.XORKeyStream(sessionKey, exportedSessionKey)
+		am.EncryptedRandomSessionKey = sessionKey
+
+		am.LmChallengeResponse = computeLmV2Response(ntlmV2Hash,
+			cm.ServerChallenge[:], clientChallenge)
+	}
+
 	return am.MarshalBinary()
 }
 
