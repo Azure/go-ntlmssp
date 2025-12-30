@@ -833,19 +833,20 @@ func TestNegotiatorNegotiateKeyExchange(t *testing.T) {
 		}
 
 		if callCount == 1 {
-			// First request: no auth, return 401 with Basic auth request
+			// First request: something was provided, but we want to negotiate
 			w.Header().Set("Www-Authenticate", "Negotiate")
 			w.WriteHeader(http.StatusUnauthorized)
-			// _, _ = w.Write([]byte("basic auth required"))
 		} else if callCount == 2 && bytes.HasPrefix([]byte(authHeader), []byte("Negotiate ")) {
-			// Second request: Basic auth provided, but upgrade to NTLM
+			// Second request: negotiate message received, send challenge
+			// TODO make this better
 			challenge := "TlRMTVNTUAACAAAAEAAQADgAAAAFAoribsrCzsiI0OUAAAAAAAAAAGAAYABIAAAACgBdWAAAAA9EAE8AWgBFADEAMQBDAFIAAgAQAEQATwBaAEUAMQAxAEMAUgABABAARABPAFoARQAxADEAQwBSAAQAEABkAG8AegBlADEAMQBjAHIAAwAQAGQAbwB6AGUAMQAxAGMAcgAHAAgA4hcayxV53AEAAAAA"
 			w.Header().Set("Www-Authenticate", "Negotiate "+challenge)
 			w.WriteHeader(http.StatusUnauthorized)
 		} else if callCount == 3 && bytes.HasPrefix([]byte(authHeader), []byte("Negotiate ")) {
+			// Third request: key exchange message
 			token := strings.TrimPrefix(authHeader, "Negotiate ")
 			decoded, err := base64.StdEncoding.DecodeString(token)
-			// TODO handle auth
+
 			if err == nil {
 				if bytes.Contains(decoded, []byte("testuser")) {
 					t.Error("Negotiate message contains username")
@@ -854,12 +855,11 @@ func TestNegotiatorNegotiateKeyExchange(t *testing.T) {
 					t.Error("Negotiate message contains password")
 				}
 			}
-			// Final request: accept (would be NTLM in real scenario)
-			w.Header().Set("Www-Authenticate", "Negotiate ") // TODO + NTLM challenge
-			w.WriteHeader(http.StatusOK)
 
-			// TODO now can send a normal message
-		} else { // TODO accept auth message
+			// Final request: accept
+			w.Header().Set("Www-Authenticate", "Negotiate ")
+			w.WriteHeader(http.StatusOK)
+		} else {
 			// Unexpected request
 			w.WriteHeader(http.StatusBadRequest)
 		}
@@ -893,9 +893,9 @@ func TestNegotiatorNegotiateKeyExchange(t *testing.T) {
 	}
 
 	// Verify we went through the expected upgrade flow:
-	// 1. Initial request (no auth) -> 401 Basic
-	// 2. Request with Basic auth -> 401 NTLM
-	// 3. Request with NTLM negotiate -> 200 OK (accepted without challenge in test)
+	// 1. Initial request with no auth-> 401 request to Negotiate
+	// 2. Request with Negotiate message -> 401 with challenge
+	// 3. Request with key exchange -> 200 OK
 	if callCount != 3 {
 		t.Errorf("Expected exactly 3 round trips for Basic->NTLM upgrade, got %d", callCount)
 	}
