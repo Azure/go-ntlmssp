@@ -28,9 +28,9 @@ var defaultFlags = negotiateFlagNTLMSSPNEGOTIATETARGETINFO |
 	negotiateFlagNTLMSSPNEGOTIATEUNICODE |
 	negotiateFlagNTLMSSPNEGOTIATEEXTENDEDSESSIONSECURITY |
 	negotiateFlagNTLMSSPNEGOTIATENTLM |
-	negotiateFlagNTLMSSPNEGOTIATEALWAYSSIGN |
-	negotiateFlagNTLMSSPNEGOTIATESEAL |
-	negotiateFlagNTLMSSPNEGOTIATESIGN |
+	// negotiateFlagNTLMSSPNEGOTIATEALWAYSSIGN |
+	// negotiateFlagNTLMSSPNEGOTIATESEAL |
+	// negotiateFlagNTLMSSPNEGOTIATESIGN |
 	negotiateFlagNTLMSSPNEGOTIATEKEYEXCH
 
 // NewNegotiateMessage creates a new NEGOTIATE message with the flags that this package supports.
