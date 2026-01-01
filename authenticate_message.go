@@ -62,9 +62,6 @@ func (m *authenicateMessage) MarshalBinary() ([]byte, error) {
 	}
 
 	f.NegotiateFlags.Unset(negotiateFlagNTLMSSPNEGOTIATEVERSION)
-	// TODO maybe dont need
-	f.NegotiateFlags.Unset(negotiateFlagNTLMSSPNEGOTIATETARGETINFO)
-	f.NegotiateFlags.Unset(negotiateFlagNTLMSSPTARGETTYPESERVER)
 
 	b := bytes.Buffer{}
 	if err := binary.Write(&b, binary.LittleEndian, &f); err != nil {
