@@ -194,6 +194,8 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 	return am.MarshalBinary()
 }
 
+var exportedSessionKey []byte
+
 // ProcessChallenge crafts an AUTHENTICATE message in response to the CHALLENGE message that was received from the server.
 // DomainNeeded is ignored, as the function extracts the domain from the username if needed.
 //

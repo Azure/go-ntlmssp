@@ -812,7 +812,14 @@ func TestNegotiatorBasicToNTLMUpgrade(t *testing.T) {
 }
 
 func TestNegotiatorNegotiateKeyExchange(t *testing.T) {
-	testData := []byte("test request body")
+	testData := []byte(`<?xml version="1.0" encoding="utf-8"?>
+<env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope"
+              xmlns:wsmid="http://schemas.dmtf.org/wbem/wsman/identity/1/wsmanidentity.xsd">
+	<env:Header/>
+	<env:Body>
+		<wsmid:Identify/>
+	</env:Body>
+</env:Envelope>`)
 	callCount := 0
 
 	// Create a test server that first accepts Basic auth, then upgrades to NTLM
@@ -820,29 +827,31 @@ func TestNegotiatorNegotiateKeyExchange(t *testing.T) {
 		callCount++
 		authHeader := r.Header.Get("Authorization")
 
-		// Verify body is sent correctly on all requests
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("Failed to read body on request %d: %v", callCount, err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		if !bytes.Equal(body, testData) {
-			t.Errorf("Body mismatch on request %d: expected %q, got %q", callCount, testData, body)
-		}
-
 		if callCount == 1 {
 			// First request: something was provided, but we want to negotiate
 			w.Header().Set("Www-Authenticate", "Negotiate")
 			w.WriteHeader(http.StatusUnauthorized)
 		} else if callCount == 2 && bytes.HasPrefix([]byte(authHeader), []byte("Negotiate ")) {
 			// Second request: negotiate message received, send challenge
-			// TODO make this better
-			challenge := "TlRMTVNTUAACAAAAEAAQADgAAAAFAoribsrCzsiI0OUAAAAAAAAAAGAAYABIAAAACgBdWAAAAA9EAE8AWgBFADEAMQBDAFIAAgAQAEQATwBaAEUAMQAxAEMAUgABABAARABPAFoARQAxADEAQwBSAAQAEABkAG8AegBlADEAMQBjAHIAAwAQAGQAbwB6AGUAMQAxAGMAcgAHAAgA4hcayxV53AEAAAAA"
-			w.Header().Set("Www-Authenticate", "Negotiate "+challenge)
+			// just send a random (valid) challenge for testing
+			serverChallenge := "TlRMTVNTUAACAAAAEAAQADgAAAAFAoriSbUIyJkyrfMAAAAAAAAAAGAAYABIAAAACgBdWAAAAA9NAFkAUwBFAFIAVgBFAFIAAgAQAE0AWQBTAEUAUgBWAEUAUgABABAATQBZAFMARQBSAFYARQBSAAQAEABtAHkAcwBlAHIAdgBlAHIAAwAQAG0AeQBzAGUAcgB2AGUAcgAHAAgAX2oKeJ963AEAAAAA"
+			w.Header().Set("Www-Authenticate", "Negotiate "+serverChallenge)
 			w.WriteHeader(http.StatusUnauthorized)
 		} else if callCount == 3 && bytes.HasPrefix([]byte(authHeader), []byte("Negotiate ")) {
+			// winrm expects an empty body
+			if r.Body != nil {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					w.WriteHeader(http.StatusInternalServerError)
+					t.Errorf("Failed to read body on request %d: %v", callCount, err)
+					return
+				}
+				if len(body) != 0 {
+					w.WriteHeader(http.StatusInternalServerError)
+					t.Errorf("Expected empty body on request %d, got %q", callCount, body)
+				}
+			}
+
 			// Third request: key exchange message
 			token := strings.TrimPrefix(authHeader, "Negotiate ")
 			decoded, err := base64.StdEncoding.DecodeString(token)
@@ -859,6 +868,22 @@ func TestNegotiatorNegotiateKeyExchange(t *testing.T) {
 			// Final request: accept
 			w.Header().Set("Www-Authenticate", "Negotiate ")
 			w.WriteHeader(http.StatusOK)
+		} else if callCount == 4 {
+			// the server would check its a valid soap request, and return 500 if not
+			// Verify body is sent correctly on all requests
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("Failed to read body on request %d: %v", callCount, err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			if !bytes.Equal(body, testData) {
+				t.Errorf("Body mismatch on request %d: expected %q, got %q", callCount, testData, body)
+			}
+
+			// dont need to respond, just say ok
+			w.WriteHeader(http.StatusOK)
 		} else {
 			// Unexpected request
 			w.WriteHeader(http.StatusBadRequest)
@@ -872,6 +897,7 @@ func TestNegotiatorNegotiateKeyExchange(t *testing.T) {
 		t.Fatalf("Failed to create request: %v", err)
 	}
 	req.SetBasicAuth("testuser", "testpass")
+	req.Header.Set("Content-Type", "application/soap+xml; charset=utf-8")
 
 	// Create client with NTLM negotiator
 	client := &http.Client{
