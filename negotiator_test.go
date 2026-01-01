@@ -812,6 +812,7 @@ func TestNegotiatorBasicToNTLMUpgrade(t *testing.T) {
 }
 
 func TestNegotiatorNegotiateKeyExchange(t *testing.T) {
+	// winrm will give status 500 if the message is not valid
 	testData := []byte(`<?xml version="1.0" encoding="utf-8"?>
 <env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope"
               xmlns:wsmid="http://schemas.dmtf.org/wbem/wsman/identity/1/wsmanidentity.xsd">
