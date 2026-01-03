@@ -923,8 +923,9 @@ func TestNegotiatorNegotiateKeyExchange(t *testing.T) {
 	// 1. Initial request with no auth-> 401 request to Negotiate
 	// 2. Request with Negotiate message -> 401 with challenge
 	// 3. Request with key exchange -> 200 OK
-	if callCount != 3 {
-		t.Errorf("Expected exactly 3 round trips for Basic->NTLM upgrade, got %d", callCount)
+	// 4. Final request with data -> 200 OK
+	if callCount != 4 {
+		t.Errorf("Expected exactly 4 round trips for Basic->NTLM upgrade, got %d", callCount)
 	}
 }
 
