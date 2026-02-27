@@ -811,6 +811,124 @@ func TestNegotiatorBasicToNTLMUpgrade(t *testing.T) {
 	}
 }
 
+func TestNegotiatorNegotiateKeyExchange(t *testing.T) {
+	// winrm will give status 500 if the message is not valid
+	testData := []byte(`<?xml version="1.0" encoding="utf-8"?>
+<env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope"
+              xmlns:wsmid="http://schemas.dmtf.org/wbem/wsman/identity/1/wsmanidentity.xsd">
+	<env:Header/>
+	<env:Body>
+		<wsmid:Identify/>
+	</env:Body>
+</env:Envelope>`)
+	callCount := 0
+
+	// Create a test server that first accepts Basic auth, then upgrades to NTLM
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		authHeader := r.Header.Get("Authorization")
+
+		if callCount == 1 {
+			// First request: something was provided, but we want to negotiate
+			w.Header().Set("Www-Authenticate", "Negotiate")
+			w.WriteHeader(http.StatusUnauthorized)
+		} else if callCount == 2 && bytes.HasPrefix([]byte(authHeader), []byte("Negotiate ")) {
+			// Second request: negotiate message received, send challenge
+			// just send a random (valid) challenge for testing
+			serverChallenge := "TlRMTVNTUAACAAAAEAAQADgAAAAFAoriSbUIyJkyrfMAAAAAAAAAAGAAYABIAAAACgBdWAAAAA9NAFkAUwBFAFIAVgBFAFIAAgAQAE0AWQBTAEUAUgBWAEUAUgABABAATQBZAFMARQBSAFYARQBSAAQAEABtAHkAcwBlAHIAdgBlAHIAAwAQAG0AeQBzAGUAcgB2AGUAcgAHAAgAX2oKeJ963AEAAAAA"
+			w.Header().Set("Www-Authenticate", "Negotiate "+serverChallenge)
+			w.WriteHeader(http.StatusUnauthorized)
+		} else if callCount == 3 && bytes.HasPrefix([]byte(authHeader), []byte("Negotiate ")) {
+			// winrm expects an empty body
+			if r.Body != nil {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					w.WriteHeader(http.StatusInternalServerError)
+					t.Errorf("Failed to read body on request %d: %v", callCount, err)
+					return
+				}
+				if len(body) != 0 {
+					w.WriteHeader(http.StatusInternalServerError)
+					t.Errorf("Expected empty body on request %d, got %q", callCount, body)
+				}
+			}
+
+			// Third request: key exchange message
+			token := strings.TrimPrefix(authHeader, "Negotiate ")
+			decoded, err := base64.StdEncoding.DecodeString(token)
+
+			if err == nil {
+				if bytes.Contains(decoded, []byte("testuser")) {
+					t.Error("Negotiate message contains username")
+				}
+				if bytes.Contains(decoded, []byte("testpass")) {
+					t.Error("Negotiate message contains password")
+				}
+			}
+
+			// Final request: accept
+			w.Header().Set("Www-Authenticate", "Negotiate ")
+			w.WriteHeader(http.StatusOK)
+		} else if callCount == 4 {
+			// the server would check its a valid soap request, and return 500 if not
+			// Verify body is sent correctly on all requests
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("Failed to read body on request %d: %v", callCount, err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			if !bytes.Equal(body, testData) {
+				t.Errorf("Body mismatch on request %d: expected %q, got %q", callCount, testData, body)
+			}
+
+			// dont need to respond, just say ok
+			w.WriteHeader(http.StatusOK)
+		} else {
+			// Unexpected request
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	// Create a POST request with a body
+	req, err := http.NewRequest("POST", server.URL, io.NopCloser(bytes.NewReader(testData)))
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.SetBasicAuth("testuser", "testpass")
+	req.Header.Set("Content-Type", "application/soap+xml; charset=utf-8")
+
+	// Create client with NTLM negotiator
+	client := &http.Client{
+		Transport: Negotiator{
+			RoundTripper: http.DefaultTransport,
+		},
+	}
+
+	// Make the request - should handle Basic to NTLM upgrade successfully
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// The upgrade should complete successfully
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	// Verify we went through the expected upgrade flow:
+	// 1. Initial request with no auth-> 401 request to Negotiate
+	// 2. Request with Negotiate message -> 401 with challenge
+	// 3. Request with key exchange -> 200 OK
+	// 4. Final request with data -> 200 OK
+	if callCount != 4 {
+		t.Errorf("Expected exactly 4 round trips for Basic->NTLM upgrade, got %d", callCount)
+	}
+}
+
 // TestNegotiatorBasicAuthOnly tests that the Negotiator correctly handles
 // servers that only request Basic auth and accept it without upgrading to NTLM
 func TestNegotiatorBasicAuthOnly(t *testing.T) {

@@ -322,10 +322,26 @@ func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Reque
 	if err != nil {
 		return nil
 	}
+
+	body := req.Body
+	if resauth.isNegotiate() {
+		req.Body = nil // Negotiate does not support body in authenticate message
+	}
+
 	req.Header.Set("Authorization", resauth.schema+" "+base64.StdEncoding.EncodeToString(auth))
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
 		return nil
 	}
+
+	if resauth.isNegotiate() {
+		req.Body = body // Restore body after Negotiate authenticate
+		req.Header.Del("Authorization")
+		resp, err = rt.RoundTrip(req)
+		if err != nil {
+			return nil
+		}
+	}
+
 	return resp
 }
