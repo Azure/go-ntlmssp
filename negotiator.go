@@ -337,6 +337,7 @@ func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Reque
 	if resauth.isNegotiate() {
 		req.Body = body // Restore body after Negotiate authenticate
 		req.Header.Del("Authorization")
+		drainResponse(resp)
 		resp, err = rt.RoundTrip(req)
 		if err != nil {
 			return nil

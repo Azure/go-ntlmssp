@@ -136,7 +136,7 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 	}
 
 	timestamp := cm.TargetInfo[avIDMsvAvTimestamp]
-	if timestamp == nil || cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEKEYEXCH) { // no time sent, take current time
+	if timestamp == nil { // no time sent, take current time
 		ft := uint64(time.Now().UnixNano()) / 100
 		ft += 116444736000000000 // add time between unix & windows offset
 		timestamp = make([]byte, 8)
@@ -166,13 +166,17 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 	am.NtChallengeResponse = computeNtlmV2Response(ntlmV2Hash,
 		cm.ServerChallenge[:], clientChallenge, timestamp, cm.TargetInfoRaw)
 
-	if cm.TargetInfoRaw == nil {
+	if cm.TargetInfoRaw == nil ||
+		cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEKEYEXCH) {
 		am.LmChallengeResponse = computeLmV2Response(ntlmV2Hash,
 			cm.ServerChallenge[:], clientChallenge)
 	}
 
 	if cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEKEYEXCH) {
-		userSessionKey := hmacMd5(ntlmV2Hash, am.NtChallengeResponse)
+		if len(am.NtChallengeResponse) < 16 {
+			return nil, errors.New("invalid NTLMv2 challenge response: missing NTProofStr")
+		}
+		userSessionKey := hmacMd5(ntlmV2Hash, am.NtChallengeResponse[:16])
 
 		cipher, err := rc4.NewCipher(userSessionKey)
 		if err != nil {
@@ -183,9 +187,6 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 		exportedSessionKey = []byte(rand.Text()[:16])
 		cipher.XORKeyStream(sessionKey, exportedSessionKey)
 		am.EncryptedRandomSessionKey = sessionKey
-
-		am.LmChallengeResponse = computeLmV2Response(ntlmV2Hash,
-			cm.ServerChallenge[:], clientChallenge)
 	}
 
 	return am.MarshalBinary()
