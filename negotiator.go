@@ -5,9 +5,12 @@ package ntlmssp
 
 import (
 	"bytes"
+	"crypto/md5"
+	"crypto/rc4"
 	"encoding/base64"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -335,7 +338,57 @@ func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Reque
 	}
 
 	if resauth.isNegotiate() {
-		req.Body = body // Restore body after Negotiate authenticate
+		// Derive signing and sealing keys (MS-NLMP §3.4.5.2).
+		signKeyIn := append(append([]byte{}, exportedSessionKey...), append([]byte(CLIENT_TO_SERVER_SIGNING), 0)...)
+		sealKeyIn := append(append([]byte{}, exportedSessionKey...), append([]byte(CLIENT_TO_SERVER_SEALING), 0)...)
+		clientSignKeyArr := md5.Sum(signKeyIn)
+		clientSealKeyArr := md5.Sum(sealKeyIn)
+		clientSignKey := clientSignKeyArr[:]
+		clientSealKey := clientSealKeyArr[:]
+
+		// Read the plaintext body once — used for both HMAC and encryption below.
+		plaintext, readErr := io.ReadAll(body)
+		if readErr != nil {
+			return nil
+		}
+
+		seq := []byte{0, 0, 0, 0} // sequence number 0 (LE)
+
+		// MS-NLMP §3.4.4 GSS_WrapEx with SEAL:
+		sealCipher, cipherErr := rc4.NewCipher(clientSealKey)
+		if cipherErr != nil {
+			return nil
+		}
+
+		// Step 1: encrypt body (RC4 state advances past len(plaintext) bytes)
+		encBody := make([]byte, len(plaintext))
+		sealCipher.XORKeyStream(encBody, plaintext)
+
+		// Step 2: HMAC-MD5(SignKey, seqNum || plaintext)[0:8]
+		// Step 3: encrypt that HMAC with the same cipher state (now advanced by step 1)
+		encHmac := make([]byte, 8)
+		sealCipher.XORKeyStream(encHmac, hmacMd5(clientSignKey, append(seq, plaintext...))[:8])
+
+		// NTLMSSP_MESSAGE_SIGNATURE (16 bytes): version(4) | encHmac(8) | seqNum(4)
+		sig := append(append(append([]byte{}, []byte(VERSION_MAGIC)...), encHmac...), seq...)
+
+		// Binary payload per MS-WSMV §3.1.4.2:
+		payload := append([]byte{16, 0, 0, 0}, append(sig, encBody...)...)
+
+		// Multipart/encrypted body (MS-WSMV §3.1.4.2)
+		var multipartBody bytes.Buffer
+		multipartBody.WriteString("--Encrypted Boundary\r\n")
+		multipartBody.WriteString("Content-Type: application/HTTP-SPNEGO-session-encrypted\r\n")
+		multipartBody.WriteString("OriginalContent: type=application/soap+xml;charset=UTF-8;Length=" + strconv.Itoa(len(plaintext)) + "\r\n")
+		multipartBody.WriteString("--Encrypted Boundary\r\n")
+		multipartBody.WriteString("Content-Type: application/octet-stream\r\n")
+		multipartBody.Write(payload)
+		multipartBody.WriteString("--Encrypted Boundary--\r\n")
+
+		req.Body = io.NopCloser(&multipartBody)
+		req.ContentLength = int64(multipartBody.Len())
+		req.Header.Set("Content-Type", `multipart/encrypted;protocol="application/HTTP-SPNEGO-session-encrypted";boundary="Encrypted Boundary"`)
+
 		req.Header.Del("Authorization")
 		drainResponse(resp)
 		resp, err = rt.RoundTrip(req)
@@ -346,3 +399,7 @@ func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Reque
 
 	return resp
 }
+
+const CLIENT_TO_SERVER_SIGNING = "session key to client-to-server signing key magic constant"
+const CLIENT_TO_SERVER_SEALING = "session key to client-to-server sealing key magic constant"
+const VERSION_MAGIC = "\x01\x00\x00\x00"
