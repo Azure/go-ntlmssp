@@ -8,6 +8,7 @@ import (
 	"crypto/md5"
 	"crypto/rc4"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net/http"
 	"slices"
@@ -350,6 +351,11 @@ func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Reque
 		if err != nil {
 			return nil
 		}
+
+		err = UnsealResponse(resp)
+		if err != nil {
+			return nil
+		}
 	}
 
 	return resp
@@ -357,23 +363,35 @@ func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Reque
 
 const CLIENT_TO_SERVER_SIGNING = "session key to client-to-server signing key magic constant"
 const CLIENT_TO_SERVER_SEALING = "session key to client-to-server sealing key magic constant"
+const SERVER_TO_CLIENT_SIGNING = "session key to server-to-client signing key magic constant"
+const SERVER_TO_CLIENT_SEALING = "session key to server-to-client sealing key magic constant"
 const VERSION_MAGIC = "\x01\x00\x00\x00"
 
-func seal(sealKey []byte, plaintext []byte) (encBody []byte, cipher *rc4.Cipher, err error) {
+func seal(sealKey []byte, plaintext []byte) (ciphertext []byte, cipher *rc4.Cipher, err error) {
 	cipher, err = rc4.NewCipher(sealKey)
 	if err != nil {
-		return nil, nil, err
+		return
 	}
-	encBody = make([]byte, len(plaintext))
-	cipher.XORKeyStream(encBody, plaintext)
-	return encBody, cipher, nil
+	ciphertext = make([]byte, len(plaintext))
+	cipher.XORKeyStream(ciphertext, plaintext)
+	return
 }
 
-func sign(sealCipher *rc4.Cipher, signKey []byte, seqNum []byte, plaintext []byte) []byte {
+func unseal(sealKey []byte, ciphertext []byte) (plaintext []byte, cipher *rc4.Cipher, err error) {
+	cipher, err = rc4.NewCipher(sealKey)
+	if err != nil {
+		return
+	}
+	plaintext = make([]byte, len(ciphertext))
+	cipher.XORKeyStream(plaintext, ciphertext)
+	return
+}
+
+func sign(sealCipher *rc4.Cipher, signKey []byte, seq []byte, plaintext []byte) []byte {
 	encHmac := make([]byte, 8)
-	sealCipher.XORKeyStream(encHmac, hmacMd5(signKey, append(seqNum, plaintext...))[:8])
-	// NTLMSSP_MESSAGE_SIGNATURE (16 bytes): version(4) | encHmac(8) | seqNum(4)
-	return slices.Concat([]byte(VERSION_MAGIC), encHmac, seqNum)
+	sealCipher.XORKeyStream(encHmac, hmacMd5(signKey, append(seq, plaintext...))[:8])
+	// NTLMSSP_MESSAGE_SIGNATURE (16 bytes): version(4) | encHmac(8) | seq(4)
+	return slices.Concat([]byte(VERSION_MAGIC), encHmac, seq)
 }
 
 func SealRequest(req *http.Request, body io.ReadCloser) error {
@@ -416,12 +434,72 @@ func SealRequest(req *http.Request, body io.ReadCloser) error {
 	return nil
 }
 
+func UnsealResponse(resp *http.Response) error {
+	serverSignKey := NewServerSignKey()
+	serverSealKey := NewServerSealKey()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	var emessage []byte
+	for boundary := range bytes.SplitSeq(body, []byte("--Encrypted Boundary")) {
+		if header, ok := bytes.CutPrefix(boundary, []byte("\r\nContent-Type: application/HTTP-SPNEGO-session-encrypted\r\nOriginalContent: ")); ok {
+			// use this data to restore the original response info for the caller
+			header = bytes.TrimSuffix(header, []byte("\r\n"))
+			for part := range bytes.SplitSeq(header, []byte(";")) {
+				if after, ok := bytes.CutPrefix(part, []byte("Length=")); ok {
+					length, err := strconv.ParseInt(string(after), 10, 64)
+					if err != nil {
+						return errors.New("invalid length in encrypted message header")
+					}
+
+					resp.ContentLength = int64(length)
+					resp.Header.Set("Content-Length", string(after))
+				} else if contentType, ok := bytes.CutPrefix(part, []byte("type=")); ok {
+					resp.Header.Set("Content-Type", string(contentType))
+				}
+			}
+		} else if data, ok := bytes.CutPrefix(boundary, []byte("\r\nContent-Type: application/octet-stream\r\n")); ok {
+			emessage = data
+		}
+	}
+
+	if len(emessage) < 20 {
+		return errors.New("encrypted part too short to contain signature")
+	}
+
+	signature := emessage[4:20]
+	ciphertext := emessage[20:]
+
+	plaintext, cipher, err := unseal(serverSealKey, ciphertext)
+	if err != nil {
+		return err
+	}
+
+	expectedSig := sign(cipher, serverSignKey, signature[12:16], plaintext)
+	if !bytes.Equal(signature, expectedSig) {
+		return errors.New("invalid signature in sealed response")
+	}
+
+	return nil
+}
+
 func NewClientSignKey() []byte {
 	return newSessionKey(exportedSessionKey, CLIENT_TO_SERVER_SIGNING)
 }
 
 func NewClientSealKey() []byte {
 	return newSessionKey(exportedSessionKey, CLIENT_TO_SERVER_SEALING)
+}
+
+func NewServerSignKey() []byte {
+	return newSessionKey(exportedSessionKey, SERVER_TO_CLIENT_SIGNING)
+}
+
+func NewServerSealKey() []byte {
+	return newSessionKey(exportedSessionKey, SERVER_TO_CLIENT_SEALING)
 }
 
 func newSessionKey(sessionKey []byte, magicConstant string) []byte {
