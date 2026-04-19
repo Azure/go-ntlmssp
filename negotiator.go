@@ -256,7 +256,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	drainResponse(resp)
 
 	// Second step: process challenge and resend the original body with the authenticate message
-	resp = completeHandshake(rt, resauth, req, id, l.WorkstationName)
+	resp, _ = completeHandshake(rt, resauth, req, id, l.WorkstationName)
 	if resp == nil {
 		return originalResp, nil
 	}
@@ -304,18 +304,21 @@ func clientHandshake(rt http.RoundTripper, req *http.Request, schema string, dom
 	return res
 }
 
-func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Request, id identity, workstation string) *http.Response {
+// completeHandshake sends the AUTHENTICATE message and returns the server response along with
+// the exported session key. The session key is nil when NTLMSSP_NEGOTIATE_KEY_EXCH was not
+// negotiated; callers that only need the response may discard it with _.
+func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Request, id identity, workstation string) (*http.Response, []byte) {
 	if rewindBody(req) != nil {
-		return nil
+		return nil, nil
 	}
 	challenge, err := resauth.token()
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	if !resauth.isNTLM() || len(challenge) == 0 {
 		// The only expected schema here is NTLM/Negotiate with a challenge token,
 		// otherwise the negotiation is over.
-		return nil
+		return nil, nil
 	}
 	var opts *AuthenticateMessageOptions
 	if workstation != "" {
@@ -323,9 +326,9 @@ func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Reque
 			WorkstationName: workstation,
 		}
 	}
-	auth, err := NewAuthenticateMessage(challenge, id.username, id.password, opts)
+	auth, sessionKey, err := newAuthenticateMessageInternal(challenge, id.username, id.password, opts)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 
 	body := req.Body
@@ -336,29 +339,29 @@ func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Reque
 	req.Header.Set("Authorization", resauth.schema+" "+base64.StdEncoding.EncodeToString(auth))
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 
 	if resauth.isNegotiate() {
-		err = SealRequest(req, body)
+		err = SealRequest(req, body, sessionKey)
 		if err != nil {
-			return nil
+			return nil, nil
 		}
 
 		req.Header.Del("Authorization")
 		drainResponse(resp)
 		resp, err = rt.RoundTrip(req)
 		if err != nil {
-			return nil
+			return nil, nil
 		}
 
-		err = UnsealResponse(resp)
+		err = UnsealResponse(resp, sessionKey)
 		if err != nil {
-			return nil
+			return nil, nil
 		}
 	}
 
-	return resp
+	return resp, sessionKey
 }
 
 const CLIENT_TO_SERVER_SIGNING = "session key to client-to-server signing key magic constant"
@@ -367,23 +370,13 @@ const SERVER_TO_CLIENT_SIGNING = "session key to server-to-client signing key ma
 const SERVER_TO_CLIENT_SEALING = "session key to server-to-client sealing key magic constant"
 const VERSION_MAGIC = "\x01\x00\x00\x00"
 
-func seal(sealKey []byte, plaintext []byte) (ciphertext []byte, cipher *rc4.Cipher, err error) {
-	cipher, err = rc4.NewCipher(sealKey)
+func rc4k(key []byte, data []byte) (out []byte, cipher *rc4.Cipher, err error) {
+	cipher, err = rc4.NewCipher(key)
 	if err != nil {
 		return
 	}
-	ciphertext = make([]byte, len(plaintext))
-	cipher.XORKeyStream(ciphertext, plaintext)
-	return
-}
-
-func unseal(sealKey []byte, ciphertext []byte) (plaintext []byte, cipher *rc4.Cipher, err error) {
-	cipher, err = rc4.NewCipher(sealKey)
-	if err != nil {
-		return
-	}
-	plaintext = make([]byte, len(ciphertext))
-	cipher.XORKeyStream(plaintext, ciphertext)
+	out = make([]byte, len(data))
+	cipher.XORKeyStream(out, data)
 	return
 }
 
@@ -394,10 +387,10 @@ func sign(sealCipher *rc4.Cipher, signKey []byte, seq []byte, plaintext []byte) 
 	return slices.Concat([]byte(VERSION_MAGIC), encHmac, seq)
 }
 
-func SealRequest(req *http.Request, body io.ReadCloser) error {
+func SealRequest(req *http.Request, body io.ReadCloser, sessionKey []byte) error {
 	// Derive signing and sealing keys (MS-NLMP §3.4.5.2).
-	clientSignKey := NewClientSignKey()
-	clientSealKey := NewClientSealKey()
+	clientSignKey := NewClientSignKey(sessionKey)
+	clientSealKey := NewClientSealKey(sessionKey)
 
 	// Read the plaintext body once — used for both HMAC and encryption below.
 	plaintext, readErr := io.ReadAll(body)
@@ -407,11 +400,13 @@ func SealRequest(req *http.Request, body io.ReadCloser) error {
 
 	seq := []byte{0, 0, 0, 0} // sequence number 0 (LE)
 
-	encBody, sealCipher, err := seal(clientSealKey, plaintext)
+	// seal the message
+	encBody, sealCipher, err := rc4k(clientSealKey, plaintext)
 	if err != nil {
 		return nil
 	}
 
+	// sign the message
 	sig := sign(sealCipher, clientSignKey, seq, plaintext)
 
 	// Binary payload per MS-WSMV §3.1.4.2:
@@ -434,9 +429,14 @@ func SealRequest(req *http.Request, body io.ReadCloser) error {
 	return nil
 }
 
-func UnsealResponse(resp *http.Response) error {
-	serverSignKey := NewServerSignKey()
-	serverSealKey := NewServerSealKey()
+func UnsealResponse(resp *http.Response, sessionKey []byte) error {
+	if !strings.Contains(resp.Header.Get("Content-Type"), "multipart/encrypted") {
+		// Not an encrypted response; leave it untouched.
+		return nil
+	}
+
+	serverSignKey := NewServerSignKey(sessionKey)
+	serverSealKey := NewServerSealKey(sessionKey)
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -446,7 +446,6 @@ func UnsealResponse(resp *http.Response) error {
 	var emessage []byte
 	for boundary := range bytes.SplitSeq(body, []byte("--Encrypted Boundary")) {
 		if header, ok := bytes.CutPrefix(boundary, []byte("\r\nContent-Type: application/HTTP-SPNEGO-session-encrypted\r\nOriginalContent: ")); ok {
-			// use this data to restore the original response info for the caller
 			header = bytes.TrimSuffix(header, []byte("\r\n"))
 			for part := range bytes.SplitSeq(header, []byte(";")) {
 				if after, ok := bytes.CutPrefix(part, []byte("Length=")); ok {
@@ -454,7 +453,6 @@ func UnsealResponse(resp *http.Response) error {
 					if err != nil {
 						return errors.New("invalid length in encrypted message header")
 					}
-
 					resp.ContentLength = int64(length)
 					resp.Header.Set("Content-Length", string(after))
 				} else if contentType, ok := bytes.CutPrefix(part, []byte("type=")); ok {
@@ -473,7 +471,7 @@ func UnsealResponse(resp *http.Response) error {
 	signature := emessage[4:20]
 	ciphertext := emessage[20:]
 
-	plaintext, cipher, err := unseal(serverSealKey, ciphertext)
+	plaintext, cipher, err := rc4k(serverSealKey, ciphertext)
 	if err != nil {
 		return err
 	}
@@ -483,23 +481,24 @@ func UnsealResponse(resp *http.Response) error {
 		return errors.New("invalid signature in sealed response")
 	}
 
+	resp.Body = io.NopCloser(bytes.NewReader(plaintext))
 	return nil
 }
 
-func NewClientSignKey() []byte {
-	return newSessionKey(exportedSessionKey, CLIENT_TO_SERVER_SIGNING)
+func NewClientSignKey(sessionKey []byte) []byte {
+	return newSessionKey(sessionKey, CLIENT_TO_SERVER_SIGNING)
 }
 
-func NewClientSealKey() []byte {
-	return newSessionKey(exportedSessionKey, CLIENT_TO_SERVER_SEALING)
+func NewClientSealKey(sessionKey []byte) []byte {
+	return newSessionKey(sessionKey, CLIENT_TO_SERVER_SEALING)
 }
 
-func NewServerSignKey() []byte {
-	return newSessionKey(exportedSessionKey, SERVER_TO_CLIENT_SIGNING)
+func NewServerSignKey(sessionKey []byte) []byte {
+	return newSessionKey(sessionKey, SERVER_TO_CLIENT_SIGNING)
 }
 
-func NewServerSealKey() []byte {
-	return newSessionKey(exportedSessionKey, SERVER_TO_CLIENT_SEALING)
+func NewServerSealKey(sessionKey []byte) []byte {
+	return newSessionKey(sessionKey, SERVER_TO_CLIENT_SEALING)
 }
 
 func newSessionKey(sessionKey []byte, magicConstant string) []byte {

@@ -111,20 +111,22 @@ type AuthenticateMessageOptions struct {
 	PasswordHashed bool
 }
 
-// NewAuthenticateMessage creates a new AUTHENTICATE message in response to the CHALLENGE message that was received from the server.
-// The options parameter allows specifying additional settings for the message, it can be nil to use defaults.
-func NewAuthenticateMessage(challenge []byte, username, password string, options *AuthenticateMessageOptions) ([]byte, error) {
+// newAuthenticateMessageInternal is the shared implementation for building an AUTHENTICATE message.
+// It returns the serialized message bytes and the exported session key (non-nil only when
+// NTLMSSP_NEGOTIATE_KEY_EXCH was negotiated). Public callers that do not need the session key
+// should use [NewAuthenticateMessage].
+func newAuthenticateMessageInternal(challenge []byte, username, password string, options *AuthenticateMessageOptions) ([]byte, []byte, error) {
 	if username == "" && password == "" {
-		return nil, errors.New("anonymous authentication not supported")
+		return nil, nil, errors.New("anonymous authentication not supported")
 	}
 
 	var cm challengeMessage
 	if err := cm.UnmarshalBinary(challenge); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATELMKEY) {
-		return nil, errors.New("only NTLM v2 is supported, but server requested v1 (NTLMSSP_NEGOTIATE_LM_KEY)")
+		return nil, nil, errors.New("only NTLM v2 is supported, but server requested v1 (NTLMSSP_NEGOTIATE_LM_KEY)")
 	}
 
 	am := authenicateMessage{
@@ -145,7 +147,7 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 
 	clientChallenge := make([]byte, 8)
 	if _, err := rand.Reader.Read(clientChallenge); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var ntlmV2Hash []byte
@@ -156,7 +158,7 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 		}
 		hashBytes, err := hex.DecodeString(password)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		ntlmV2Hash = getNtlmV2Hashed(hashBytes, am.UserName, am.DomainName)
 	} else {
@@ -172,27 +174,34 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 			cm.ServerChallenge[:], clientChallenge)
 	}
 
+	var exportedSessionKey []byte
 	if cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEKEYEXCH) {
 		if len(am.NtChallengeResponse) < 16 {
-			return nil, errors.New("invalid NTLMv2 challenge response: missing NTProofStr")
+			return nil, nil, errors.New("invalid NTLMv2 challenge response: missing NTProofStr")
 		}
 		userSessionKey := hmacMd5(ntlmV2Hash, am.NtChallengeResponse[:16])
 
 		cipher, err := rc4.NewCipher(userSessionKey)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
-		sessionKey := make([]byte, 16)
 		exportedSessionKey = []byte(rand.Text()[:16])
-		cipher.XORKeyStream(sessionKey, exportedSessionKey)
-		am.EncryptedRandomSessionKey = sessionKey
+		encryptedSessionKey := make([]byte, 16)
+		cipher.XORKeyStream(encryptedSessionKey, exportedSessionKey)
+		am.EncryptedRandomSessionKey = encryptedSessionKey
 	}
 
-	return am.MarshalBinary()
+	authBytes, err := am.MarshalBinary()
+	return authBytes, exportedSessionKey, err
 }
 
-var exportedSessionKey []byte
+// NewAuthenticateMessage creates a new AUTHENTICATE message in response to the CHALLENGE message that was received from the server.
+// The options parameter allows specifying additional settings for the message, it can be nil to use defaults.
+func NewAuthenticateMessage(challenge []byte, username, password string, options *AuthenticateMessageOptions) ([]byte, error) {
+	authBytes, _, err := newAuthenticateMessageInternal(challenge, username, password, options)
+	return authBytes, err
+}
 
 // ProcessChallenge crafts an AUTHENTICATE message in response to the CHALLENGE message that was received from the server.
 // DomainNeeded is ignored, as the function extracts the domain from the username if needed.
