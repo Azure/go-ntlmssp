@@ -79,7 +79,7 @@ func TestNegotiatorWithSeekableBody(t *testing.T) {
 
 	// Create client with NTLM negotiator
 	client := &http.Client{
-		Transport: Negotiator{
+		Transport: &Negotiator{
 			RoundTripper: http.DefaultTransport,
 		},
 	}
@@ -147,7 +147,7 @@ func TestNegotiatorWithPartialSeekableBody(t *testing.T) {
 
 	// Create client with NTLM negotiator
 	client := &http.Client{
-		Transport: Negotiator{
+		Transport: &Negotiator{
 			RoundTripper: http.DefaultTransport,
 		},
 	}
@@ -190,7 +190,7 @@ func TestNegotiatorWithNonSeekableBody(t *testing.T) {
 
 	// Create client with NTLM negotiator
 	client := &http.Client{
-		Transport: Negotiator{
+		Transport: &Negotiator{
 			RoundTripper: http.DefaultTransport,
 		},
 	}
@@ -264,7 +264,7 @@ func TestNegotiatorDoesNotModifyRequest(t *testing.T) {
 
 	// Create client with NTLM negotiator
 	client := &http.Client{
-		Transport: Negotiator{
+		Transport: &Negotiator{
 			RoundTripper: http.DefaultTransport,
 		},
 	}
@@ -335,7 +335,7 @@ func TestNegotiatorDoesNotModifyRequestWithAuthChallenge(t *testing.T) {
 
 	// Create client with NTLM negotiator
 	client := &http.Client{
-		Transport: Negotiator{
+		Transport: &Negotiator{
 			RoundTripper: http.DefaultTransport,
 		},
 	}
@@ -409,7 +409,7 @@ func TestNegotiatorWithUnseekableReadSeeker(t *testing.T) {
 
 	// Create client with NTLM negotiator
 	client := &http.Client{
-		Transport: Negotiator{
+		Transport: &Negotiator{
 			RoundTripper: http.DefaultTransport,
 		},
 	}
@@ -597,7 +597,7 @@ func TestNegotiatorWithEmptyBody(t *testing.T) {
 
 	// Create client with NTLM negotiator
 	client := &http.Client{
-		Transport: Negotiator{
+		Transport: &Negotiator{
 			RoundTripper: http.DefaultTransport,
 		},
 	}
@@ -668,7 +668,7 @@ func TestNegotiatorWithEmptyBodyAndNTLMChallenge(t *testing.T) {
 
 	// Create client with NTLM negotiator
 	client := &http.Client{
-		Transport: Negotiator{
+		Transport: &Negotiator{
 			RoundTripper: http.DefaultTransport,
 		},
 	}
@@ -769,7 +769,7 @@ func TestNegotiatorBasicToNTLMUpgrade(t *testing.T) {
 
 	// Create client with NTLM negotiator
 	client := &http.Client{
-		Transport: Negotiator{
+		Transport: &Negotiator{
 			RoundTripper:   http.DefaultTransport,
 			AllowBasicAuth: true,
 		},
@@ -902,7 +902,7 @@ func TestNegotiatorNegotiateKeyExchange(t *testing.T) {
 
 	// Create client with NTLM negotiator
 	client := &http.Client{
-		Transport: Negotiator{
+		Transport: &Negotiator{
 			RoundTripper: http.DefaultTransport,
 		},
 	}
@@ -926,6 +926,126 @@ func TestNegotiatorNegotiateKeyExchange(t *testing.T) {
 	// 4. Final request with data -> 200 OK
 	if callCount != 4 {
 		t.Errorf("Expected exactly 4 round trips for Basic->NTLM upgrade, got %d", callCount)
+	}
+}
+
+// TestNegotiatorNegotiateKeyExchangeTwoRequests tests that a session key derived
+// from the first NTLM handshake can be reused for a second request, skipping
+// re-negotiation and sending the body sealed directly.
+func TestNegotiatorNegotiateKeyExchangeTwoRequests(t *testing.T) {
+	testData := []byte(`<?xml version="1.0" encoding="utf-8"?>
+<env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope"
+              xmlns:wsmid="http://schemas.dmtf.org/wbem/wsman/identity/1/wsmanidentity.xsd">
+	<env:Header/>
+	<env:Body>
+		<wsmid:Identify/>
+	</env:Body>
+</env:Envelope>`)
+
+	const serverChallenge = "TlRMTVNTUAACAAAAEAAQADgAAAAFAoriSbUIyJkyrfMAAAAAAAAAAGAAYABIAAAACgBdWAAAAA9NAFkAUwBFAFIAVgBFAFIAAgAQAE0AWQBTAEUAUgBWAEUAUgABABAATQBZAFMARQBSAFYARQBSAAQAEABtAHkAcwBlAHIAdgBlAHIAAwAQAG0AeQBzAGUAcgB2AGUAcgAHAAgAX2oKeJ963AEAAAAA"
+	const username = "testuser"
+	const password = "testpass"
+
+	callCount := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		authHeader := r.Header.Get("Authorization")
+		contentType := r.Header.Get("Content-Type")
+
+		switch callCount {
+		case 1:
+			// First client.Do(), request 1: no auth → request Negotiate
+			w.Header().Set("Www-Authenticate", "Negotiate")
+			w.WriteHeader(http.StatusUnauthorized)
+		case 2:
+			// Negotiate message → send challenge
+			if !bytes.HasPrefix([]byte(authHeader), []byte("Negotiate ")) {
+				t.Errorf("Request %d: expected Negotiate auth, got %q", callCount, authHeader)
+			}
+			w.Header().Set("Www-Authenticate", "Negotiate "+serverChallenge)
+			w.WriteHeader(http.StatusUnauthorized)
+		case 3:
+			// Authenticate message (Negotiate schema sends empty body here)
+			if !bytes.HasPrefix([]byte(authHeader), []byte("Negotiate ")) {
+				t.Errorf("Request %d: expected Negotiate auth, got %q", callCount, authHeader)
+			}
+			if r.Body != nil {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("Request %d: failed to read body: %v", callCount, err)
+				} else if len(body) != 0 {
+					t.Errorf("Request %d: expected empty body, got %d bytes", callCount, len(body))
+				}
+			}
+			w.Header().Set("Www-Authenticate", "Negotiate ")
+			w.WriteHeader(http.StatusOK)
+		case 4:
+			// First client.Do(), request 4: sealed actual body
+			if !strings.Contains(contentType, "multipart/encrypted") {
+				t.Errorf("Request %d: expected multipart/encrypted, got %q", callCount, contentType)
+			}
+			w.WriteHeader(http.StatusOK)
+		case 5:
+			// Second client.Do(): session key reused, body sealed on first attempt
+			if !strings.Contains(contentType, "multipart/encrypted") {
+				t.Errorf("Request %d: expected multipart/encrypted (session key reused), got %q", callCount, contentType)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("Unexpected request %d — session key may not be reused correctly", callCount)
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	// First request: full 4-step Negotiate flow (anon → 401, negotiate → 401+challenge,
+	// authenticate → 200, sealed body → 200).
+	req1, err := http.NewRequest("POST", server.URL, io.NopCloser(bytes.NewReader(testData)))
+	if err != nil {
+		t.Fatalf("Failed to create request 1: %v", err)
+	}
+	req1.SetBasicAuth(username, password)
+	req1.Header.Set("Content-Type", "application/soap+xml; charset=utf-8")
+
+	client := &http.Client{
+		Transport: &Negotiator{
+			RoundTripper: http.DefaultTransport,
+		},
+	}
+
+	resp1, err := client.Do(req1)
+	if err != nil {
+		t.Fatalf("First request failed: %v", err)
+	}
+	defer resp1.Body.Close()
+
+	if resp1.StatusCode != http.StatusOK {
+		t.Errorf("First request: expected status 200, got %d", resp1.StatusCode)
+	}
+
+	// Second request: session key already known, so the Negotiator seals the
+	// body on the first attempt without re-negotiating (1 round trip instead of 4).
+	req2, err := http.NewRequest("POST", server.URL, io.NopCloser(bytes.NewReader(testData)))
+	if err != nil {
+		t.Fatalf("Failed to create request 2: %v", err)
+	}
+	req2.SetBasicAuth(username, password)
+	req2.Header.Set("Content-Type", "application/soap+xml; charset=utf-8")
+
+	resp2, err := client.Do(req2)
+	if err != nil {
+		t.Fatalf("Second request failed: %v", err)
+	}
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusOK {
+		t.Errorf("Second request: expected status 200, got %d", resp2.StatusCode)
+	}
+
+	// 4 round trips for the first request (full NTLM) + 1 for the second (key reused).
+	if callCount != 5 {
+		t.Errorf("Expected 5 total round trips (4 NTLM + 1 reused), got %d", callCount)
 	}
 }
 
@@ -977,7 +1097,7 @@ func TestNegotiatorBasicAuthOnly(t *testing.T) {
 
 	// Create client with NTLM negotiator
 	client := &http.Client{
-		Transport: Negotiator{
+		Transport: &Negotiator{
 			RoundTripper:   http.DefaultTransport,
 			AllowBasicAuth: true,
 		},
@@ -1078,7 +1198,7 @@ func TestNegotiatorRewindFailureWithBasicAuth(t *testing.T) {
 
 	// Create client with NTLM negotiator
 	client := &http.Client{
-		Transport: Negotiator{
+		Transport: &Negotiator{
 			RoundTripper: http.DefaultTransport,
 		},
 	}
@@ -1150,7 +1270,7 @@ func TestNegotiatorRewindFailureWithNTLM(t *testing.T) {
 
 	// Create client with NTLM negotiator
 	client := &http.Client{
-		Transport: Negotiator{
+		Transport: &Negotiator{
 			RoundTripper: http.DefaultTransport,
 		},
 	}
@@ -1219,7 +1339,7 @@ func TestNegotiatorInvalidChallengeToken(t *testing.T) {
 
 	// Create client with NTLM negotiator
 	client := &http.Client{
-		Transport: Negotiator{
+		Transport: &Negotiator{
 			RoundTripper: http.DefaultTransport,
 		},
 	}
@@ -1289,7 +1409,7 @@ func TestNegotiatorEmptyChallengeToken(t *testing.T) {
 
 	// Create client with NTLM negotiator
 	client := &http.Client{
-		Transport: Negotiator{
+		Transport: &Negotiator{
 			RoundTripper: http.DefaultTransport,
 		},
 	}
@@ -1363,7 +1483,7 @@ func TestNegotiatorResponseDraining(t *testing.T) {
 
 	// Create client with NTLM negotiator
 	client := &http.Client{
-		Transport: Negotiator{
+		Transport: &Negotiator{
 			RoundTripper:   http.DefaultTransport,
 			AllowBasicAuth: true,
 		},
@@ -1441,7 +1561,7 @@ func TestNegotiatorRejectsBasicAuthWhenDisabled(t *testing.T) {
 
 	// Create client with NTLM negotiator WITHOUT AllowBasicAuth
 	client := &http.Client{
-		Transport: Negotiator{
+		Transport: &Negotiator{
 			RoundTripper: http.DefaultTransport,
 			// AllowBasicAuth is false by default
 		},
@@ -1586,7 +1706,7 @@ func TestNegotiatorWorkstationAndDomainNames(t *testing.T) {
 
 			// Create client with NTLM negotiator
 			client := &http.Client{
-				Transport: Negotiator{
+				Transport: &Negotiator{
 					RoundTripper:      http.DefaultTransport,
 					WorkstationDomain: tc.workstationDomain,
 					WorkstationName:   tc.workstationName,

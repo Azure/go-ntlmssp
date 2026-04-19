@@ -154,11 +154,16 @@ type Negotiator struct {
 	// It is passed to the negotiate and authenticate messages.
 	// Useful for auditing purposes on the server side.
 	WorkstationName string
+
+	// ExportedSessionKey is the session key exported from the completed handshake.
+	// It is only set if the server requested NTLMSSP_NEGOTIATE_KEY_EXCH and the handshake completed successfully.
+	// It is used for signing and sealing messages after the handshake.
+	ExportedSessionKey []byte
 }
 
 // RoundTrip sends the request to the server, handling any authentication
 // re-sends as needed.
-func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
+func (l *Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Use default round tripper if not provided
 	rt := l.RoundTripper
 	if rt == nil {
@@ -191,10 +196,28 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	// First try anonymous, in case the server still finds us authenticated from previous traffic
 	req.Body = body
 	req.Header.Del("Authorization")
+
+	if len(l.ExportedSessionKey) > 0 {
+		// If we have an exported session key from a previous handshake, try sealing the request right away.
+		err = SealRequest(req, body, l.ExportedSessionKey)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
 		return nil, err
 	}
+
+	if len(l.ExportedSessionKey) > 0 {
+		// If we have an exported session key, try unsealing the response right away.
+		err = UnsealResponse(resp, l.ExportedSessionKey)
+		if err != nil {
+			return resp, err
+		}
+	}
+
 	if resp.StatusCode != http.StatusUnauthorized {
 		// No authentication required, return the response as is
 		return resp, nil
@@ -256,7 +279,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	drainResponse(resp)
 
 	// Second step: process challenge and resend the original body with the authenticate message
-	resp, _ = completeHandshake(rt, resauth, req, id, l.WorkstationName)
+	resp, l.ExportedSessionKey = completeHandshake(rt, resauth, req, id, l.WorkstationName)
 	if resp == nil {
 		return originalResp, nil
 	}

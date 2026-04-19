@@ -24,7 +24,7 @@ func TestE2E_Failure(t *testing.T) {
 
 	t.Run("AuthenticationFailure", func(t *testing.T) {
 		client := &http.Client{
-			Transport: Negotiator{
+			Transport: &Negotiator{
 				RoundTripper: &http.Transport{},
 			},
 		}
@@ -77,7 +77,7 @@ func TestE2E_Failure(t *testing.T) {
 
 	t.Run("ContextCancellation", func(t *testing.T) {
 		client := &http.Client{
-			Transport: Negotiator{
+			Transport: &Negotiator{
 				RoundTripper: &http.Transport{},
 			},
 		}
@@ -144,7 +144,7 @@ func TestE2E_Success(t *testing.T) {
 	for _, username := range names {
 		t.Run(username, func(t *testing.T) {
 			client := &http.Client{
-				Transport: Negotiator{
+				Transport: &Negotiator{
 					RoundTripper: &http.Transport{},
 				},
 			}

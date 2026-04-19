@@ -20,7 +20,7 @@ func ExampleNegotiator() {
 	password := "your-password"
 
 	client := &http.Client{
-		Transport: ntlmssp.Negotiator{},
+		Transport: &ntlmssp.Negotiator{},
 	}
 
 	req, err := http.NewRequest("GET", url, nil)
@@ -47,7 +47,7 @@ func ExampleNegotiator_customTLS() {
 	password := "your-password"
 
 	client := &http.Client{
-		Transport: ntlmssp.Negotiator{
+		Transport: &ntlmssp.Negotiator{
 			RoundTripper: &http.Transport{
 				TLSClientConfig: &tls.Config{
 					MinVersion: tls.VersionTLS12,
