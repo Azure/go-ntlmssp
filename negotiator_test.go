@@ -1024,13 +1024,14 @@ func TestNegotiatorNegotiateKeyExchangeTwoRequests(t *testing.T) {
 		t.Errorf("First request: expected status 200, got %d", resp1.StatusCode)
 	}
 
+	sessionKey1 := client.Transport.(*Negotiator).ExportedSessionKey
+
 	// Second request: session key already known, so the Negotiator seals the
 	// body on the first attempt without re-negotiating (1 round trip instead of 4).
 	req2, err := http.NewRequest("POST", server.URL, io.NopCloser(bytes.NewReader(testData)))
 	if err != nil {
 		t.Fatalf("Failed to create request 2: %v", err)
 	}
-	req2.SetBasicAuth(username, password)
 	req2.Header.Set("Content-Type", "application/soap+xml; charset=utf-8")
 
 	resp2, err := client.Do(req2)
@@ -1041,6 +1042,12 @@ func TestNegotiatorNegotiateKeyExchangeTwoRequests(t *testing.T) {
 
 	if resp2.StatusCode != http.StatusOK {
 		t.Errorf("Second request: expected status 200, got %d", resp2.StatusCode)
+	}
+
+	sessionKey2 := client.Transport.(*Negotiator).ExportedSessionKey
+
+	if !bytes.Equal(sessionKey1, sessionKey2) {
+		t.Error("Session key was not reused for second request")
 	}
 
 	// 4 round trips for the first request (full NTLM) + 1 for the second (key reused).
