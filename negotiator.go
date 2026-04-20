@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // negotiatorBody wraps an io.ReadSeeker to allow waiting for its closure
@@ -168,11 +169,16 @@ type Negotiator struct {
 	serverSealCipher *rc4.Cipher
 	serverSignKey    []byte
 	clientSeqNum     uint32
+
+	mu sync.Mutex
 }
 
 // RoundTrip sends the request to the server, handling any authentication
 // re-sends as needed.
 func (l *Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	// Use default round tripper if not provided
 	rt := l.RoundTripper
 	if rt == nil {
@@ -412,16 +418,6 @@ const CLIENT_TO_SERVER_SEALING = "session key to client-to-server sealing key ma
 const SERVER_TO_CLIENT_SIGNING = "session key to server-to-client signing key magic constant"
 const SERVER_TO_CLIENT_SEALING = "session key to server-to-client sealing key magic constant"
 const VERSION_MAGIC = "\x01\x00\x00\x00"
-
-func rc4k(key []byte, data []byte) (out []byte, cipher *rc4.Cipher, err error) {
-	cipher, err = rc4.NewCipher(key)
-	if err != nil {
-		return
-	}
-	out = make([]byte, len(data))
-	cipher.XORKeyStream(out, data)
-	return
-}
 
 func sign(sealCipher *rc4.Cipher, signKey []byte, seq []byte, plaintext []byte) []byte {
 	encHmac := make([]byte, 8)
