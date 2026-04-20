@@ -159,6 +159,15 @@ type Negotiator struct {
 	// It is only set if the server requested NTLMSSP_NEGOTIATE_KEY_EXCH and the handshake completed successfully.
 	// It is used for signing and sealing messages after the handshake.
 	ExportedSessionKey []byte
+
+	// Seal/sign state derived from ExportedSessionKey. Initialized once per session.
+	// RC4 cipher handles are persistent across messages (MS-NLMP §3.4 CONNECTION mode).
+	// seqNum increments per sealed message for replay protection.
+	clientSealCipher *rc4.Cipher
+	clientSignKey    []byte
+	serverSealCipher *rc4.Cipher
+	serverSignKey    []byte
+	clientSeqNum     uint32
 }
 
 // RoundTrip sends the request to the server, handling any authentication
@@ -173,7 +182,27 @@ func (l *Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	// If it is not basic auth, just round trip the request as usual
 	username, password, ok := req.BasicAuth()
 	if !ok {
-		return rt.RoundTrip(req)
+		usedSessionKey := l.clientSealCipher != nil
+
+		if usedSessionKey {
+			if err := SealRequest(req, req.Body, l.clientSealCipher, l.clientSignKey, l.clientSeqNum); err != nil {
+				return nil, err
+			}
+			l.clientSeqNum++
+		}
+
+		resp, err := rt.RoundTrip(req)
+		if err != nil {
+			return nil, err
+		}
+
+		if usedSessionKey {
+			if err = UnsealResponse(resp, l.serverSealCipher, l.serverSignKey); err != nil {
+				return resp, err
+			}
+		}
+
+		return resp, nil
 	}
 	id := identity{
 		username: username,
@@ -197,25 +226,9 @@ func (l *Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	req.Body = body
 	req.Header.Del("Authorization")
 
-	if len(l.ExportedSessionKey) > 0 {
-		// If we have an exported session key from a previous handshake, try sealing the request right away.
-		err = SealRequest(req, body, l.ExportedSessionKey)
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
 		return nil, err
-	}
-
-	if len(l.ExportedSessionKey) > 0 {
-		// If we have an exported session key, try unsealing the response right away.
-		err = UnsealResponse(resp, l.ExportedSessionKey)
-		if err != nil {
-			return resp, err
-		}
 	}
 
 	if resp.StatusCode != http.StatusUnauthorized {
@@ -279,14 +292,41 @@ func (l *Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	drainResponse(resp)
 
 	// Second step: process challenge and resend the original body with the authenticate message
-	resp, l.ExportedSessionKey = completeHandshake(rt, resauth, req, id, l.WorkstationName)
+	var sessionKey []byte
+	resp, sessionKey = completeHandshake(rt, resauth, req, id, l.WorkstationName)
 	if resp == nil {
 		return originalResp, nil
 	}
-	// We could return the original response in case of 401 again, but at this point
-	// it's better to return the latest response from the server, as it might be the case
-	// that we are really not authorized.
-	drainResponse(originalResp) // Done with the original response
+
+	if len(sessionKey) > 0 {
+		l.ExportedSessionKey = sessionKey
+		l.clientSignKey = NewClientSignKey(sessionKey)
+		clientSealKey := NewClientSealKey(sessionKey)
+		l.clientSealCipher, _ = rc4.NewCipher(clientSealKey)
+		l.serverSignKey = NewServerSignKey(sessionKey)
+		serverSealKey := NewServerSealKey(sessionKey)
+		l.serverSealCipher, _ = rc4.NewCipher(serverSealKey)
+		l.clientSeqNum = 0
+	}
+
+	// For Negotiate, authenticate was sent without the body; send it sealed now.
+	if resauth.isNegotiate() && l.clientSealCipher != nil {
+		if err := SealRequest(req, body, l.clientSealCipher, l.clientSignKey, l.clientSeqNum); err != nil {
+			return originalResp, nil
+		}
+		l.clientSeqNum++
+		req.Header.Del("Authorization")
+		drainResponse(resp)
+		resp, err = rt.RoundTrip(req)
+		if err != nil {
+			return originalResp, nil
+		}
+		if err = UnsealResponse(resp, l.serverSealCipher, l.serverSignKey); err != nil {
+			return resp, err
+		}
+	}
+
+	drainResponse(originalResp)
 	return resp, nil
 }
 
@@ -354,7 +394,6 @@ func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Reque
 		return nil, nil
 	}
 
-	body := req.Body
 	if resauth.isNegotiate() {
 		req.Body = nil // Negotiate does not support body in authenticate message
 	}
@@ -363,25 +402,6 @@ func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Reque
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
 		return nil, nil
-	}
-
-	if resauth.isNegotiate() {
-		err = SealRequest(req, body, sessionKey)
-		if err != nil {
-			return nil, nil
-		}
-
-		req.Header.Del("Authorization")
-		drainResponse(resp)
-		resp, err = rt.RoundTrip(req)
-		if err != nil {
-			return nil, nil
-		}
-
-		err = UnsealResponse(resp, sessionKey)
-		if err != nil {
-			return nil, nil
-		}
 	}
 
 	return resp, sessionKey
@@ -410,27 +430,21 @@ func sign(sealCipher *rc4.Cipher, signKey []byte, seq []byte, plaintext []byte) 
 	return slices.Concat([]byte(VERSION_MAGIC), encHmac, seq)
 }
 
-func SealRequest(req *http.Request, body io.ReadCloser, sessionKey []byte) error {
-	// Derive signing and sealing keys (MS-NLMP §3.4.5.2).
-	clientSignKey := NewClientSignKey(sessionKey)
-	clientSealKey := NewClientSealKey(sessionKey)
-
+func SealRequest(req *http.Request, body io.ReadCloser, sealCipher *rc4.Cipher, signKey []byte, seqNum uint32) error {
 	// Read the plaintext body once — used for both HMAC and encryption below.
 	plaintext, readErr := io.ReadAll(body)
 	if readErr != nil {
 		return nil
 	}
 
-	seq := []byte{0, 0, 0, 0} // sequence number 0 (LE)
+	seq := []byte{byte(seqNum), byte(seqNum >> 8), byte(seqNum >> 16), byte(seqNum >> 24)}
 
-	// seal the message
-	encBody, sealCipher, err := rc4k(clientSealKey, plaintext)
-	if err != nil {
-		return nil
-	}
+	// Encrypt body with persistent RC4 cipher (MS-NLMP §3.4 CONNECTION mode).
+	encBody := make([]byte, len(plaintext))
+	sealCipher.XORKeyStream(encBody, plaintext)
 
 	// sign the message
-	sig := sign(sealCipher, clientSignKey, seq, plaintext)
+	sig := sign(sealCipher, signKey, seq, plaintext)
 
 	// Binary payload per MS-WSMV §3.1.4.2:
 	payload := slices.Concat([]byte{16, 0, 0, 0}, sig, encBody)
@@ -452,14 +466,11 @@ func SealRequest(req *http.Request, body io.ReadCloser, sessionKey []byte) error
 	return nil
 }
 
-func UnsealResponse(resp *http.Response, sessionKey []byte) error {
+func UnsealResponse(resp *http.Response, sealCipher *rc4.Cipher, signKey []byte) error {
 	if !strings.Contains(resp.Header.Get("Content-Type"), "multipart/encrypted") {
 		// Not an encrypted response; leave it untouched.
 		return nil
 	}
-
-	serverSignKey := NewServerSignKey(sessionKey)
-	serverSealKey := NewServerSealKey(sessionKey)
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -494,12 +505,11 @@ func UnsealResponse(resp *http.Response, sessionKey []byte) error {
 	signature := emessage[4:20]
 	ciphertext := emessage[20:]
 
-	plaintext, cipher, err := rc4k(serverSealKey, ciphertext)
-	if err != nil {
-		return err
-	}
+	// Decrypt with persistent server RC4 cipher (continues where the last message left off).
+	plaintext := make([]byte, len(ciphertext))
+	sealCipher.XORKeyStream(plaintext, ciphertext)
 
-	expectedSig := sign(cipher, serverSignKey, signature[12:16], plaintext)
+	expectedSig := sign(sealCipher, signKey, signature[12:16], plaintext)
 	if !bytes.Equal(signature, expectedSig) {
 		return errors.New("invalid signature in sealed response")
 	}
