@@ -232,6 +232,7 @@ func (l *Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 
 			// Step 1: NEGOTIATE
 			req.Body = nil
+			req.ContentLength = 0
 			resp = clientHandshake(rt, req, resauth.schema, l.WorkstationDomain, l.WorkstationName)
 			if resp == nil {
 				return nil, errors.New("stale session: NTLM negotiate failed")

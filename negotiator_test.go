@@ -1056,6 +1056,141 @@ func TestNegotiatorNegotiateKeyExchangeTwoRequests(t *testing.T) {
 	}
 }
 
+// TestNegotiatorStaleSessionReauth tests that when a sealed second request receives a 401
+// (stale session), the Negotiator transparently re-authenticates and regenerates the session key.
+func TestNegotiatorStaleSessionReauth(t *testing.T) {
+	testData := []byte(`<?xml version="1.0" encoding="utf-8"?>
+<env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope"
+              xmlns:wsmid="http://schemas.dmtf.org/wbem/wsman/identity/1/wsmanidentity.xsd">
+	<env:Header/>
+	<env:Body>
+		<wsmid:Identify/>
+	</env:Body>
+</env:Envelope>`)
+
+	const serverChallenge = "TlRMTVNTUAACAAAAEAAQADgAAAAFAoriSbUIyJkyrfMAAAAAAAAAAGAAYABIAAAACgBdWAAAAA9NAFkAUwBFAFIAVgBFAFIAAgAQAE0AWQBTAEUAUgBWAEUAUgABABAATQBZAFMARQBSAFYARQBSAAQAEABtAHkAcwBlAHIAdgBlAHIAAwAQAG0AeQBzAGUAcgB2AGUAcgAHAAgAX2oKeJ963AEAAAAA"
+	const username = "testuser"
+	const password = "testpass"
+
+	callCount := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		authHeader := r.Header.Get("Authorization")
+		contentType := r.Header.Get("Content-Type")
+
+		switch callCount {
+		case 1:
+			// First client.Do(), request 1: no auth → request Negotiate
+			w.Header().Set("Www-Authenticate", "Negotiate")
+			w.WriteHeader(http.StatusUnauthorized)
+		case 2:
+			// Negotiate message → send challenge
+			if !bytes.HasPrefix([]byte(authHeader), []byte("Negotiate ")) {
+				t.Errorf("Request %d: expected Negotiate auth, got %q", callCount, authHeader)
+			}
+			w.Header().Set("Www-Authenticate", "Negotiate "+serverChallenge)
+			w.WriteHeader(http.StatusUnauthorized)
+		case 3:
+			// Authenticate message (Negotiate schema sends empty body here)
+			if !bytes.HasPrefix([]byte(authHeader), []byte("Negotiate ")) {
+				t.Errorf("Request %d: expected Negotiate auth, got %q", callCount, authHeader)
+			}
+			w.Header().Set("Www-Authenticate", "Negotiate ")
+			w.WriteHeader(http.StatusOK)
+		case 4:
+			// First client.Do(), sealed actual body → success
+			if !strings.Contains(contentType, "multipart/encrypted") {
+				t.Errorf("Request %d: expected multipart/encrypted, got %q", callCount, contentType)
+			}
+			w.WriteHeader(http.StatusOK)
+		case 5:
+			// Second client.Do(): stale session — return 401 to trigger re-auth
+			w.Header().Set("Www-Authenticate", "Negotiate")
+			w.WriteHeader(http.StatusUnauthorized)
+		case 6:
+			// Re-auth step 1: NEGOTIATE message
+			if !bytes.HasPrefix([]byte(authHeader), []byte("Negotiate ")) {
+				t.Errorf("Request %d: expected Negotiate auth, got %q", callCount, authHeader)
+			}
+			w.Header().Set("Www-Authenticate", "Negotiate "+serverChallenge)
+			w.WriteHeader(http.StatusUnauthorized)
+		case 7:
+			// Re-auth step 2: AUTHENTICATE message (empty body)
+			if !bytes.HasPrefix([]byte(authHeader), []byte("Negotiate ")) {
+				t.Errorf("Request %d: expected Negotiate auth, got %q", callCount, authHeader)
+			}
+			w.Header().Set("Www-Authenticate", "Negotiate ")
+			w.WriteHeader(http.StatusOK)
+		case 8:
+			// Re-auth step 3: sealed body with new session key
+			if !strings.Contains(contentType, "multipart/encrypted") {
+				t.Errorf("Request %d: expected multipart/encrypted (re-auth), got %q", callCount, contentType)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("Unexpected request %d — stale session re-auth may not be working correctly", callCount)
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	req1, err := http.NewRequest("POST", server.URL, io.NopCloser(bytes.NewReader(testData)))
+	if err != nil {
+		t.Fatalf("Failed to create request 1: %v", err)
+	}
+	req1.SetBasicAuth(username, password)
+	req1.Header.Set("Content-Type", "application/soap+xml; charset=utf-8")
+
+	client := &http.Client{
+		Transport: &Negotiator{
+			RoundTripper: http.DefaultTransport,
+		},
+	}
+
+	resp1, err := client.Do(req1)
+	if err != nil {
+		t.Fatalf("First request failed: %v", err)
+	}
+	defer resp1.Body.Close()
+
+	if resp1.StatusCode != http.StatusOK {
+		t.Errorf("First request: expected status 200, got %d", resp1.StatusCode)
+	}
+
+	sessionKey1 := make([]byte, len(client.Transport.(*Negotiator).ExportedSessionKey))
+	copy(sessionKey1, client.Transport.(*Negotiator).ExportedSessionKey)
+
+	// Second request: no BasicAuth (uses cached session). The server returns 401 to
+	// simulate a stale session; the Negotiator re-authenticates transparently.
+	req2, err := http.NewRequest("POST", server.URL, io.NopCloser(bytes.NewReader(testData)))
+	if err != nil {
+		t.Fatalf("Failed to create request 2: %v", err)
+	}
+	req2.Header.Set("Content-Type", "application/soap+xml; charset=utf-8")
+
+	resp2, err := client.Do(req2)
+	if err != nil {
+		t.Fatalf("Second request failed: %v", err)
+	}
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusOK {
+		t.Errorf("Second request: expected status 200, got %d", resp2.StatusCode)
+	}
+
+	sessionKey2 := client.Transport.(*Negotiator).ExportedSessionKey
+
+	if bytes.Equal(sessionKey1, sessionKey2) {
+		t.Error("Expected session key to be regenerated after stale session, but keys are equal")
+	}
+
+	// 4 round trips for the first request (full NTLM) + 4 for re-auth (stale 401, negotiate, authenticate, sealed body).
+	if callCount != 8 {
+		t.Errorf("Expected 8 total round trips (4 NTLM + 4 re-auth), got %d", callCount)
+	}
+}
+
 // TestNegotiatorBasicAuthOnly tests that the Negotiator correctly handles
 // servers that only request Basic auth and accept it without upgrading to NTLM
 func TestNegotiatorBasicAuthOnly(t *testing.T) {
