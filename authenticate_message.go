@@ -120,6 +120,35 @@ func newAuthenticateMessageInternal(challenge []byte, username, password string,
 		return nil, nil, errors.New("anonymous authentication not supported")
 	}
 
+	user, domain := splitNameForAuth(username)
+
+	var ntlmV2Hash []byte
+	if options != nil && options.PasswordHashed {
+		hashParts := strings.Split(password, ":")
+		if len(hashParts) > 1 {
+			password = hashParts[1]
+		}
+		hashBytes, err := hex.DecodeString(password)
+		if err != nil {
+			return nil, nil, err
+		}
+		ntlmV2Hash = getNtlmV2Hashed(hashBytes, user, domain)
+	} else {
+		ntlmV2Hash = getNtlmV2Hash(password, user, domain)
+	}
+
+	var workstation string
+	if options != nil {
+		workstation = options.WorkstationName
+	}
+
+	return buildAuthenticateMessageFromHash(challenge, username, ntlmV2Hash, workstation)
+}
+
+// buildAuthenticateMessageFromHash builds an AUTHENTICATE message using a pre-computed NTLMv2
+// hash instead of a raw password. This allows callers to cache the hash and avoid storing
+// the plain-text password in memory across authentication attempts.
+func buildAuthenticateMessageFromHash(challenge []byte, username string, ntlmV2Hash []byte, workstation string) ([]byte, []byte, error) {
 	var cm challengeMessage
 	if err := cm.UnmarshalBinary(challenge); err != nil {
 		return nil, nil, err
@@ -133,9 +162,7 @@ func newAuthenticateMessageInternal(challenge []byte, username, password string,
 		NegotiateFlags: cm.NegotiateFlags,
 	}
 	am.UserName, am.DomainName = splitNameForAuth(username)
-	if options != nil {
-		am.Workstation = options.WorkstationName
-	}
+	am.Workstation = workstation
 
 	timestamp := cm.TargetInfo[avIDMsvAvTimestamp]
 	if timestamp == nil { // no time sent, take current time
@@ -148,21 +175,6 @@ func newAuthenticateMessageInternal(challenge []byte, username, password string,
 	clientChallenge := make([]byte, 8)
 	if _, err := rand.Reader.Read(clientChallenge); err != nil {
 		return nil, nil, err
-	}
-
-	var ntlmV2Hash []byte
-	if options != nil && options.PasswordHashed {
-		hashParts := strings.Split(password, ":")
-		if len(hashParts) > 1 {
-			password = hashParts[1]
-		}
-		hashBytes, err := hex.DecodeString(password)
-		if err != nil {
-			return nil, nil, err
-		}
-		ntlmV2Hash = getNtlmV2Hashed(hashBytes, am.UserName, am.DomainName)
-	} else {
-		ntlmV2Hash = getNtlmV2Hash(password, am.UserName, am.DomainName)
 	}
 
 	am.NtChallengeResponse = computeNtlmV2Response(ntlmV2Hash,

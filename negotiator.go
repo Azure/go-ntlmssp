@@ -170,6 +170,14 @@ type Negotiator struct {
 	serverSignKey    []byte
 	clientSeqNum     uint32
 
+	// Cached credentials for stale-session re-authentication.
+	// cachedNtlmV2Hash is derived from the password at handshake time so the raw
+	// password does not need to be retained. It is stable across sessions because it
+	// depends only on username, domain, and password — not on any per-session values
+	// (timestamp, server challenge, client challenge).
+	cachedUsername   string
+	cachedNtlmV2Hash []byte
+
 	mu sync.Mutex
 }
 
@@ -190,8 +198,20 @@ func (l *Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	if !ok {
 		usedSessionKey := l.clientSealCipher != nil
 
+		// Read plaintext body before sealing so we can re-seal it after a stale-session
+		// re-authentication without having to ask the caller to retry.
+		var plainBody []byte
+		if usedSessionKey && req.Body != nil {
+			var bodyErr error
+			plainBody, bodyErr = io.ReadAll(req.Body)
+			if bodyErr != nil {
+				return nil, bodyErr
+			}
+			_ = req.Body.Close()
+		}
+
 		if usedSessionKey {
-			if err := SealRequest(req, req.Body, l.clientSealCipher, l.clientSignKey, l.clientSeqNum); err != nil {
+			if err := SealRequest(req, io.NopCloser(bytes.NewReader(plainBody)), l.clientSealCipher, l.clientSignKey, l.clientSeqNum); err != nil {
 				return nil, err
 			}
 			l.clientSeqNum++
@@ -200,6 +220,68 @@ func (l *Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 		resp, err := rt.RoundTrip(req)
 		if err != nil {
 			return nil, err
+		}
+
+		// The session may have gone stale (server restart, session expiry). Re-authenticate
+		// transparently using the cached NTLMv2 hash if we have one.
+		if usedSessionKey && resp.StatusCode == http.StatusUnauthorized && len(l.cachedNtlmV2Hash) > 0 {
+			drainResponse(resp)
+			l.resetSession()
+
+			resauth := newAuthHeader(resp.Header)
+			if !resauth.isNTLM() {
+				return nil, errors.New("stale session: server did not issue an NTLM/Negotiate challenge")
+			}
+
+			// Step 1: NEGOTIATE
+			req.Body = nil
+			resp = clientHandshake(rt, req, resauth.schema, l.WorkstationDomain, l.WorkstationName)
+			if resp == nil {
+				return nil, errors.New("stale session: NTLM negotiate failed")
+			}
+			if resp.StatusCode != http.StatusUnauthorized {
+				return resp, nil
+			}
+			resauth = newAuthHeader(resp.Header)
+			drainResponse(resp)
+
+			// Step 2: AUTHENTICATE using cached NTLMv2 hash
+			var sessionKey []byte
+			resp, sessionKey = completeHandshakeWithHash(rt, resauth, req, l.cachedUsername, l.cachedNtlmV2Hash, l.WorkstationName, plainBody)
+			if resp == nil {
+				return nil, errors.New("stale session: NTLM authenticate failed")
+			}
+
+			if len(sessionKey) > 0 {
+				l.ExportedSessionKey = sessionKey
+				l.clientSignKey = NewClientSignKey(sessionKey)
+				clientSealKey := NewClientSealKey(sessionKey)
+				l.clientSealCipher, _ = rc4.NewCipher(clientSealKey)
+				l.serverSignKey = NewServerSignKey(sessionKey)
+				serverSealKey := NewServerSealKey(sessionKey)
+				l.serverSealCipher, _ = rc4.NewCipher(serverSealKey)
+				l.clientSeqNum = 0
+			}
+
+			// For Negotiate, the body was withheld from the authenticate message;
+			// send it now, sealed with the new session key.
+			if resauth.isNegotiate() && l.clientSealCipher != nil {
+				if err := SealRequest(req, io.NopCloser(bytes.NewReader(plainBody)), l.clientSealCipher, l.clientSignKey, l.clientSeqNum); err != nil {
+					return resp, nil
+				}
+				l.clientSeqNum++
+				req.Header.Del("Authorization")
+				drainResponse(resp)
+				resp, err = rt.RoundTrip(req)
+				if err != nil {
+					return nil, err
+				}
+				if err = UnsealResponse(resp, l.serverSealCipher, l.serverSignKey); err != nil {
+					return resp, err
+				}
+			}
+
+			return resp, nil
 		}
 
 		if usedSessionKey {
@@ -313,6 +395,12 @@ func (l *Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 		serverSealKey := NewServerSealKey(sessionKey)
 		l.serverSealCipher, _ = rc4.NewCipher(serverSealKey)
 		l.clientSeqNum = 0
+
+		// Cache credentials for transparent stale-session re-authentication.
+		// We store the NTLMv2 hash rather than the raw password; the hash is stable
+		// across sessions and cannot be trivially reversed to recover the password.
+		l.cachedUsername = id.username
+		l.cachedNtlmV2Hash = ntlmV2HashFor(id.username, id.password)
 	}
 
 	// For Negotiate, authenticate was sent without the body; send it sealed now.
@@ -355,6 +443,25 @@ func rewindBody(req *http.Request) error {
 		return nb.rewind()
 	}
 	return nil
+}
+
+// ntlmV2HashFor computes the NTLMv2 hash from a plain-text username and password.
+// The result is stable (no per-session values) and can be cached to avoid retaining
+// the raw password.
+func ntlmV2HashFor(username, password string) []byte {
+	user, domain := splitNameForAuth(username)
+	return getNtlmV2Hash(password, user, domain)
+}
+
+// resetSession clears all session-key material so the next request triggers a fresh
+// NTLM handshake. Cached credentials are intentionally left intact for re-auth.
+func (l *Negotiator) resetSession() {
+	l.ExportedSessionKey = nil
+	l.clientSealCipher = nil
+	l.clientSignKey = nil
+	l.serverSealCipher = nil
+	l.serverSignKey = nil
+	l.clientSeqNum = 0
 }
 
 func clientHandshake(rt http.RoundTripper, req *http.Request, schema string, domain, workstation string) *http.Response {
@@ -410,6 +517,36 @@ func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Reque
 		return nil, nil
 	}
 
+	return resp, sessionKey
+}
+
+// completeHandshakeWithHash is like completeHandshake but uses a pre-computed NTLMv2 hash
+// instead of a raw password. plainBody is the plaintext request body that should accompany
+// the AUTHENTICATE message for NTLM (for Negotiate it is sent separately after the handshake).
+func completeHandshakeWithHash(rt http.RoundTripper, resauth authheader, req *http.Request, username string, ntlmV2Hash []byte, workstation string, plainBody []byte) (*http.Response, []byte) {
+	challenge, err := resauth.token()
+	if err != nil {
+		return nil, nil
+	}
+	if !resauth.isNTLM() || len(challenge) == 0 {
+		return nil, nil
+	}
+	auth, sessionKey, err := buildAuthenticateMessageFromHash(challenge, username, ntlmV2Hash, workstation)
+	if err != nil {
+		return nil, nil
+	}
+
+	if resauth.isNegotiate() {
+		req.Body = nil // body is sent separately after the handshake, sealed with the new session key
+	} else {
+		req.Body = io.NopCloser(bytes.NewReader(plainBody))
+	}
+
+	req.Header.Set("Authorization", resauth.schema+" "+base64.StdEncoding.EncodeToString(auth))
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		return nil, nil
+	}
 	return resp, sessionKey
 }
 
