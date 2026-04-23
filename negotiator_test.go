@@ -2082,3 +2082,21 @@ func verifyAuthenticateMessage(t *testing.T, msgData []byte, expectedWorkstation
 		t.Errorf("Authenticate message does not contain expected workstation name %q", expectedWorkstation)
 	}
 }
+
+func TestNewAuthenticateMessage_ChallengeTargetInfoOffsetOverflowNoPanics(t *testing.T) {
+	challenge := make([]byte, 48)
+	copy(challenge[0:8], []byte{'N', 'T', 'L', 'M', 'S', 'S', 'P', 0x00})
+	binary.LittleEndian.PutUint32(challenge[8:12], 2)
+
+	binary.LittleEndian.PutUint16(challenge[40:42], 2)
+	binary.LittleEndian.PutUint16(challenge[42:44], 2)
+	binary.LittleEndian.PutUint32(challenge[44:48], ^uint32(0))
+
+	_, err := NewAuthenticateMessage(challenge, "user", "password", nil)
+	if err == nil {
+		t.Fatal("expected error for challenge with overflowing target info field")
+	}
+	if !strings.Contains(err.Error(), "varField extends beyond buffer") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
