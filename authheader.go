@@ -48,6 +48,11 @@ func (h authheader) isNTLM() bool {
 	return h.schema == "NTLM" || h.schema == "Negotiate"
 }
 
+// isNegotiate returns true if the authheader schema is Negotiate.
+func (h authheader) isNegotiate() bool {
+	return h.schema == "Negotiate"
+}
+
 // isBasic returns true if the authheader schema is Basic.
 func (h authheader) isBasic() bool {
 	return h.schema == "Basic"
