@@ -23,6 +23,11 @@ const (
 	VERSION_MAGIC            = "\x01\x00\x00\x00"
 )
 
+// SealRequest encrypts body and replaces req.Body with a multipart/encrypted payload
+// as specified by MS-WSMV §3.1.4.2 (WinRM message encryption). sealCipher and signKey
+// must come from a completed NTLM key-exchange handshake. The caller must increment
+// seqNum after each sealed message to maintain the RC4 stream and replay-protection
+// sequence.
 func SealRequest(req *http.Request, body io.ReadCloser, sealCipher *rc4.Cipher, signKey []byte, seqNum uint32) error {
 	// Read the plaintext body once — used for both HMAC and encryption below.
 	plaintext, readErr := io.ReadAll(body)
@@ -59,6 +64,10 @@ func SealRequest(req *http.Request, body io.ReadCloser, sealCipher *rc4.Cipher, 
 	return nil
 }
 
+// UnsealResponse decrypts a multipart/encrypted response in-place, restoring the
+// plaintext body and the original Content-Type and Content-Length headers. If the
+// response is not encrypted it is left untouched. Returns an error if decryption
+// succeeds but the signature does not match.
 func UnsealResponse(resp *http.Response, sealCipher *rc4.Cipher, signKey []byte) error {
 	if !strings.Contains(resp.Header.Get("Content-Type"), "multipart/encrypted") {
 		// Not an encrypted response; leave it untouched.
@@ -94,6 +103,7 @@ func UnsealResponse(resp *http.Response, sealCipher *rc4.Cipher, signKey []byte)
 		return errors.New("encrypted part too short to contain signature")
 	}
 
+	// Octet-stream layout: length(4) | NTLMSSP_MESSAGE_SIGNATURE(16) | ciphertext
 	signature := emessage[4:20]
 	ciphertext := emessage[20:]
 
@@ -110,18 +120,22 @@ func UnsealResponse(resp *http.Response, sealCipher *rc4.Cipher, signKey []byte)
 	return nil
 }
 
+// NewClientSignKey derives the client-to-server signing key from the exported session key (MS-NLMP §3.4.5.2).
 func NewClientSignKey(sessionKey []byte) []byte {
 	return newSessionKey(sessionKey, CLIENT_TO_SERVER_SIGNING)
 }
 
+// NewClientSealKey derives the client-to-server sealing key from the exported session key (MS-NLMP §3.4.5.3).
 func NewClientSealKey(sessionKey []byte) []byte {
 	return newSessionKey(sessionKey, CLIENT_TO_SERVER_SEALING)
 }
 
+// NewServerSignKey derives the server-to-client signing key from the exported session key (MS-NLMP §3.4.5.2).
 func NewServerSignKey(sessionKey []byte) []byte {
 	return newSessionKey(sessionKey, SERVER_TO_CLIENT_SIGNING)
 }
 
+// NewServerSealKey derives the server-to-client sealing key from the exported session key (MS-NLMP §3.4.5.3).
 func NewServerSealKey(sessionKey []byte) []byte {
 	return newSessionKey(sessionKey, SERVER_TO_CLIENT_SEALING)
 }

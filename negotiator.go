@@ -213,6 +213,10 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	// If it is not basic auth, just round trip the request as usual
 	username, password, ok := req.BasicAuth()
 	if !ok {
+		// usedSessionKey is true when a previous handshake established signing keys
+		// for this host. Subsequent no-auth requests must be sent sealed rather than
+		// starting a new handshake. The host check prevents a session established with
+		// one server from being applied to a different server.
 		usedSessionKey := l.Session != nil &&
 			l.Session.clientSealCipher != nil &&
 			l.Session.host == req.URL.Host
