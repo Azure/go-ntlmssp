@@ -76,11 +76,10 @@ func UnsealResponse(resp *http.Response, sealCipher *rc4.Cipher, signKey []byte)
 			header = bytes.TrimSuffix(header, []byte("\r\n"))
 			for part := range bytes.SplitSeq(header, []byte(";")) {
 				if after, ok := bytes.CutPrefix(part, []byte("Length=")); ok {
-					length, err := strconv.ParseInt(string(after), 10, 64)
+					resp.ContentLength, err = strconv.ParseInt(string(after), 10, 64)
 					if err != nil {
 						return errors.New("invalid length in encrypted message header")
 					}
-					resp.ContentLength = int64(length)
 					resp.Header.Set("Content-Length", string(after))
 				} else if contentType, ok := bytes.CutPrefix(part, []byte("type=")); ok {
 					resp.Header.Set("Content-Type", string(contentType))
