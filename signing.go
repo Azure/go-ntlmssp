@@ -134,13 +134,13 @@ func newSessionKey(sessionKey []byte, magicConstant string) []byte {
 
 // resetSession clears all session-key material so the next request triggers a fresh
 // NTLM handshake. Cached credentials are intentionally left intact for re-auth.
-func (l *Negotiator) resetSession() {
-	l.ExportedSessionKey = nil
-	l.clientSealCipher = nil
-	l.clientSignKey = nil
-	l.serverSealCipher = nil
-	l.serverSignKey = nil
-	l.clientSeqNum = 0
+func (s *NegotiatorSession) resetSession() {
+	s.ExportedSessionKey = nil
+	s.clientSealCipher = nil
+	s.clientSignKey = nil
+	s.serverSealCipher = nil
+	s.serverSignKey = nil
+	s.clientSeqNum = 0
 }
 
 func sign(sealCipher *rc4.Cipher, signKey []byte, seq []byte, plaintext []byte) []byte {
