@@ -1098,6 +1098,103 @@ func TestNegotiatorNegotiateKeyExchangeTwoRequests(t *testing.T) {
 	}
 }
 
+// TestNegotiatorSessionNotReusedAcrossHosts verifies that a session established with one
+// server is not applied to requests to a different server, even when using the same Session.
+func TestNegotiatorSessionNotReusedAcrossHosts(t *testing.T) {
+	const serverChallenge = "TlRMTVNTUAACAAAAEAAQADgAAAAFAoriSbUIyJkyrfMAAAAAAAAAAGAAYABIAAAACgBdWAAAAA9NAFkAUwBFAFIAVgBFAFIAAgAQAE0AWQBTAEUAUgBWAEUAUgABABAATQBZAFMARQBSAFYARQBSAAQAEABtAHkAcwBlAHIAdgBlAHIAAwAQAG0AeQBzAGUAcgB2AGUAcgAHAAgAX2oKeJ963AEAAAAA"
+
+	sess := new(NegotiatorSession)
+
+	// Server 1: full 4-step Negotiate flow that establishes a session key.
+	callCount1 := 0
+	server1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount1++
+		auth := r.Header.Get("Authorization")
+		switch callCount1 {
+		case 1:
+			w.Header().Set("Www-Authenticate", "Negotiate")
+			w.WriteHeader(http.StatusUnauthorized)
+		case 2:
+			w.Header().Set("Www-Authenticate", "Negotiate "+serverChallenge)
+			w.WriteHeader(http.StatusUnauthorized)
+		case 3:
+			w.Header().Set("Www-Authenticate", "Negotiate ")
+			w.WriteHeader(http.StatusOK)
+		case 4:
+			// Sealed body — just accept it.
+			if !strings.Contains(r.Header.Get("Content-Type"), "multipart/encrypted") {
+				t.Errorf("server1 request %d: expected sealed body", callCount1)
+			}
+			_, _ = io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("server1: unexpected request %d (auth=%q)", callCount1, auth)
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer server1.Close()
+
+	// Server 2: accepts requests without any auth (plain HTTP).
+	// If the Negotiator wrongly applies server1's session key here, the body will
+	// arrive as multipart/encrypted, which the server does not expect.
+	callCount2 := 0
+	server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount2++
+		if strings.Contains(r.Header.Get("Content-Type"), "multipart/encrypted") {
+			t.Errorf("server2: received sealed body — session was incorrectly reused across hosts")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server2.Close()
+
+	testData := []byte("hello")
+
+	// Request 1 to server1: basic auth → full NTLM → session established.
+	req1, err := http.NewRequest("POST", server1.URL, io.NopCloser(bytes.NewReader(testData)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req1.SetBasicAuth("testuser", "testpass")
+	req1.Header.Set("Content-Type", "application/soap+xml; charset=utf-8")
+
+	neg := Negotiator{Session: sess}
+	resp1, err := neg.RoundTrip(req1)
+	if err != nil {
+		t.Fatalf("server1 request failed: %v", err)
+	}
+	defer resp1.Body.Close()
+	if resp1.StatusCode != http.StatusOK {
+		t.Errorf("server1: expected 200, got %d", resp1.StatusCode)
+	}
+	if sess.clientSealCipher == nil {
+		t.Fatal("expected session key to be established after server1 request")
+	}
+
+	// Request 2 to server2: no basic auth. The session host is server1, so it must NOT be used.
+	req2, err := http.NewRequest("POST", server2.URL, io.NopCloser(bytes.NewReader(testData)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req2.Header.Set("Content-Type", "application/soap+xml; charset=utf-8")
+
+	resp2, err := neg.RoundTrip(req2)
+	if err != nil {
+		t.Fatalf("server2 request failed: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Errorf("server2: expected 200, got %d", resp2.StatusCode)
+	}
+
+	// server1 saw 4 round trips (full NTLM + sealed body), server2 saw exactly 1.
+	if callCount1 != 4 {
+		t.Errorf("server1: expected 4 round trips, got %d", callCount1)
+	}
+	if callCount2 != 1 {
+		t.Errorf("server2: expected 1 round trip, got %d", callCount2)
+	}
+}
+
 // TestNegotiatorStaleSessionReauth tests that when a sealed second request receives a 401
 // (stale session), the Negotiator transparently re-authenticates and regenerates the session key.
 func TestNegotiatorStaleSessionReauth(t *testing.T) {

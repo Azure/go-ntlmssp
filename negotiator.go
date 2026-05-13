@@ -122,6 +122,10 @@ func GetDomain(username string) (user string, domain string, domainNeeded bool) 
 // NegotiatorSession holds the per-connection NTLM session state for signing and sealing.
 // Assign a *NegotiatorSession to [Negotiator.Session] to enable key exchange across
 // requests. Without it, signing and sealing are not available.
+//
+// A NegotiatorSession is scoped to a single (host, user) pair. Using the same
+// NegotiatorSession for requests to different hosts or with different usernames is
+// not supported and will not apply the cached session to mismatched requests.
 type NegotiatorSession struct {
 	// ExportedSessionKey is the session key exported from the completed handshake.
 	// It is only set if the server requested NTLMSSP_NEGOTIATE_KEY_EXCH and the handshake completed successfully.
@@ -143,6 +147,12 @@ type NegotiatorSession struct {
 	// (timestamp, server challenge, client challenge).
 	cachedUsername   string
 	cachedNtlmV2Hash []byte
+
+	// host and username record which (server, user) pair this session was established
+	// for. They are checked before applying the session to a request to prevent
+	// accidentally sealing traffic for a different server or user.
+	host     string
+	username string
 
 	mu sync.Mutex
 }
@@ -204,7 +214,9 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	// If it is not basic auth, just round trip the request as usual
 	username, password, ok := req.BasicAuth()
 	if !ok {
-		usedSessionKey := l.Session != nil && l.Session.clientSealCipher != nil
+		usedSessionKey := l.Session != nil &&
+			l.Session.clientSealCipher != nil &&
+			l.Session.host == req.URL.Host
 
 		// Read plaintext body before sealing so we can re-seal it after a stale-session
 		// re-authentication without having to ask the caller to retry.
@@ -270,6 +282,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 				serverSealKey := NewServerSealKey(sessionKey)
 				l.Session.serverSealCipher, _ = rc4.NewCipher(serverSealKey)
 				l.Session.clientSeqNum = 0
+				l.Session.host = req.URL.Host
 			}
 
 			// For Negotiate, the body was withheld from the authenticate message;
@@ -410,6 +423,11 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 		// across sessions and cannot be trivially reversed to recover the password.
 		l.Session.cachedUsername = id.username
 		l.Session.cachedNtlmV2Hash = ntlmV2HashFor(id.username, id.password)
+
+		// Record the (host, user) pair so we can guard against accidentally
+		// applying this session to a different server or user later.
+		l.Session.host = req.URL.Host
+		l.Session.username = id.username
 	}
 
 	// For Negotiate, authenticate was sent without the body; send it sealed now.
