@@ -148,11 +148,10 @@ type NegotiatorSession struct {
 	cachedUsername   string
 	cachedNtlmV2Hash []byte
 
-	// host and username record which (server, user) pair this session was established
-	// for. They are checked before applying the session to a request to prevent
-	// accidentally sealing traffic for a different server or user.
-	host     string
-	username string
+	// host records which server this session was established for. It is checked
+	// before applying the session to a request to prevent accidentally sealing
+	// traffic destined for a different server.
+	host string
 
 	mu sync.Mutex
 }
@@ -427,7 +426,6 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 		// Record the (host, user) pair so we can guard against accidentally
 		// applying this session to a different server or user later.
 		l.Session.host = req.URL.Host
-		l.Session.username = id.username
 	}
 
 	// For Negotiate, authenticate was sent without the body; send it sealed now.
