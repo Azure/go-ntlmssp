@@ -6,6 +6,7 @@ package ntlmssp
 import (
 	"bytes"
 	"crypto/rc4"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"io"
@@ -153,6 +154,11 @@ type NegotiatorSession struct {
 	// traffic destined for a different server.
 	host string
 
+	// sealTransport is the auto-provisioned transport used when the Negotiator has
+	// no explicit RoundTripper. Stored here so the same transport (and its connection
+	// pool) is reused across requests rather than recreated on every RoundTrip call.
+	sealTransport http.RoundTripper
+
 	mu sync.Mutex
 }
 
@@ -165,7 +171,10 @@ type NegotiatorSession struct {
 // Basic authentication and [Negotiator.AllowBasicAuth] is set to true.
 type Negotiator struct {
 	// RoundTripper is the underlying round tripper to use.
-	// If nil, http.DefaultTransport is used.
+	// If nil and Session is also nil, http.DefaultTransport is used.
+	// If nil and Session is set, a private transport is provisioned automatically:
+	// HTTP/2 is disabled and MaxConnsPerHost is capped at 1 so the RC4 cipher
+	// stream stays tied to a single TCP connection (MS-NLMP §3.4 CONNECTION mode).
 	http.RoundTripper
 
 	// AllowBasicAuth controls whether to send Basic authentication credentials
@@ -196,6 +205,38 @@ type Negotiator struct {
 	Session *NegotiatorSession
 }
 
+// transport returns the RoundTripper to use for outgoing requests.
+// When Session is set and no explicit RoundTripper is provided, a private transport
+// is provisioned once and cached in the session. It disables HTTP/2 (whose
+// out-of-order delivery breaks the sequential RC4 stream) and caps the connection
+// pool to one so the cipher state stays tied to a single TCP connection.
+// Must be called with l.Session.mu already held when Session is non-nil.
+func (l Negotiator) transport() http.RoundTripper {
+	if l.RoundTripper != nil {
+		return l.RoundTripper
+	}
+
+	if l.Session != nil {
+		if l.Session.sealTransport == nil {
+			l.Session.sealTransport = &http.Transport{
+				TLSNextProto:        make(map[string]func(string, *tls.Conn) http.RoundTripper),
+				MaxConnsPerHost:     1,
+				MaxIdleConnsPerHost: 1,
+			}
+		}
+		return l.Session.sealTransport
+	}
+
+	return http.DefaultTransport
+}
+
+// NewSealingNegotiator returns a Negotiator configured for NTLM signing and sealing.
+// A private transport with connection pinning and HTTP/2 disabled is provisioned
+// automatically; callers that need a custom transport can set RoundTripper after construction.
+func NewSealingNegotiator() Negotiator {
+	return Negotiator{Session: new(NegotiatorSession)}
+}
+
 // RoundTrip sends the request to the server, handling any authentication
 // re-sends as needed.
 func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -204,11 +245,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 		defer l.Session.mu.Unlock()
 	}
 
-	// Use default round tripper if not provided
-	rt := l.RoundTripper
-	if rt == nil {
-		rt = http.DefaultTransport
-	}
+	rt := l.transport()
 
 	// If it is not basic auth, just round trip the request as usual
 	username, password, ok := req.BasicAuth()

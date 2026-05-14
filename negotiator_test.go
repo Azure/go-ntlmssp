@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -824,7 +825,7 @@ func TestNegotiatorNegotiateKeyExchange(t *testing.T) {
 	</env:Body>
 </env:Envelope>`)
 	callCount := 0
-	neg := Negotiator{RoundTripper: http.DefaultTransport, Session: new(NegotiatorSession)}
+	neg := NewSealingNegotiator()
 	var serverDecryptCipher *rc4.Cipher
 
 	// Create a test server that first accepts Basic auth, then upgrades to NTLM
@@ -962,7 +963,7 @@ func TestNegotiatorNegotiateKeyExchangeTwoRequests(t *testing.T) {
 	const password = "testpass"
 
 	callCount := 0
-	neg := Negotiator{RoundTripper: http.DefaultTransport, Session: new(NegotiatorSession)}
+	neg := NewSealingNegotiator()
 	var serverDecryptCipher *rc4.Cipher
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1212,7 +1213,7 @@ func TestNegotiatorStaleSessionReauth(t *testing.T) {
 	const password = "testpass"
 
 	callCount := 0
-	neg := Negotiator{RoundTripper: http.DefaultTransport, Session: new(NegotiatorSession)}
+	neg := NewSealingNegotiator()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
@@ -2177,6 +2178,233 @@ func verifyAuthenticateMessage(t *testing.T, msgData []byte, expectedWorkstation
 	// Check if the unicode workstation name appears in the decoded message
 	if !bytes.Contains(decoded, expectedUnicode) {
 		t.Errorf("Authenticate message does not contain expected workstation name %q", expectedWorkstation)
+	}
+}
+
+// TestNegotiatorSealingUsesOneConnection verifies that all NTLM handshake requests
+// and the subsequent sealed data requests arrive over the same TCP connection.
+// RC4 in CONNECTION mode is stateful per-TCP-connection, so the client must not let
+// the transport open a second connection mid-session.
+func TestNegotiatorSealingUsesOneConnection(t *testing.T) {
+	const serverChallenge = "TlRMTVNTUAACAAAAEAAQADgAAAAFAoriSbUIyJkyrfMAAAAAAAAAAGAAYABIAAAACgBdWAAAAA9NAFkAUwBFAFIAVgBFAFIAAgAQAE0AWQBTAEUAUgBWAEUAUgABABAATQBZAFMARQBSAFYARQBSAAQAEABtAHkAcwBlAHIAdgBlAHIAAwAQAG0AeQBzAGUAcgB2AGUAcgAHAAgAX2oKeJ963AEAAAAA"
+	const username = "testuser"
+	const password = "testpass"
+
+	testData := []byte("sealed request body")
+	callCount := 0
+	var remoteAddrs []string
+	var mu sync.Mutex
+
+	neg := NewSealingNegotiator()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		mu.Lock()
+		remoteAddrs = append(remoteAddrs, r.RemoteAddr)
+		mu.Unlock()
+
+		authHeader := r.Header.Get("Authorization")
+		switch callCount {
+		case 1:
+			w.Header().Set("Www-Authenticate", "Negotiate")
+			w.WriteHeader(http.StatusUnauthorized)
+		case 2:
+			if !bytes.HasPrefix([]byte(authHeader), []byte("Negotiate ")) {
+				t.Errorf("request %d: expected Negotiate auth, got %q", callCount, authHeader)
+			}
+			w.Header().Set("Www-Authenticate", "Negotiate "+serverChallenge)
+			w.WriteHeader(http.StatusUnauthorized)
+		case 3:
+			if !bytes.HasPrefix([]byte(authHeader), []byte("Negotiate ")) {
+				t.Errorf("request %d: expected Negotiate auth, got %q", callCount, authHeader)
+			}
+			w.Header().Set("Www-Authenticate", "Negotiate ")
+			w.WriteHeader(http.StatusOK)
+		case 4:
+			if !strings.Contains(r.Header.Get("Content-Type"), "multipart/encrypted") {
+				t.Errorf("request %d: expected sealed body", callCount)
+			}
+			_, _ = io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusOK)
+		case 5:
+			if !strings.Contains(r.Header.Get("Content-Type"), "multipart/encrypted") {
+				t.Errorf("request %d: expected sealed body (session reuse)", callCount)
+			}
+			_, _ = io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected request %d", callCount)
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	client := &http.Client{Transport: neg}
+
+	req1, err := http.NewRequest("POST", server.URL, io.NopCloser(bytes.NewReader(testData)))
+	if err != nil {
+		t.Fatalf("create request 1: %v", err)
+	}
+	req1.SetBasicAuth(username, password)
+	req1.Header.Set("Content-Type", "application/soap+xml; charset=utf-8")
+
+	resp1, err := client.Do(req1)
+	if err != nil {
+		t.Fatalf("request 1 failed: %v", err)
+	}
+	resp1.Body.Close()
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("request 1: expected 200, got %d", resp1.StatusCode)
+	}
+
+	req2, err := http.NewRequest("POST", server.URL, io.NopCloser(bytes.NewReader(testData)))
+	if err != nil {
+		t.Fatalf("create request 2: %v", err)
+	}
+	req2.Header.Set("Content-Type", "application/soap+xml; charset=utf-8")
+
+	resp2, err := client.Do(req2)
+	if err != nil {
+		t.Fatalf("request 2 failed: %v", err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("request 2: expected 200, got %d", resp2.StatusCode)
+	}
+
+	if callCount != 5 {
+		t.Errorf("expected 5 round trips (4 NTLM + 1 reuse), got %d", callCount)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for i, addr := range remoteAddrs[1:] {
+		if addr != remoteAddrs[0] {
+			t.Errorf("request %d used a different TCP connection (addr %q != %q) — RC4 state would be out of sync", i+2, addr, remoteAddrs[0])
+		}
+	}
+}
+
+// TestNegotiatorConnectionCloseTriggersReauth verifies that when the server closes
+// the TCP connection (Connection: close), the next sealed request triggers a full NTLM
+// re-authentication rather than continuing to stream stale RC4 state into the new connection.
+func TestNegotiatorConnectionCloseTriggersReauth(t *testing.T) {
+	const serverChallenge = "TlRMTVNTUAACAAAAEAAQADgAAAAFAoriSbUIyJkyrfMAAAAAAAAAAGAAYABIAAAACgBdWAAAAA9NAFkAUwBFAFIAVgBFAFIAAgAQAE0AWQBTAEUAUgBWAEUAUgABABAATQBZAFMARQBSAFYARQBSAAQAEABtAHkAcwBlAHIAdgBlAHIAAwAQAG0AeQBzAGUAcgB2AGUAcgAHAAgAX2oKeJ963AEAAAAA"
+	const username = "testuser"
+	const password = "testpass"
+
+	testData := []byte("sealed request body")
+	callCount := 0
+	handshakeCount := 0
+
+	neg := NewSealingNegotiator()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		authHeader := r.Header.Get("Authorization")
+		contentType := r.Header.Get("Content-Type")
+
+		switch callCount {
+		case 1:
+			w.Header().Set("Www-Authenticate", "Negotiate")
+			w.WriteHeader(http.StatusUnauthorized)
+		case 2:
+			if !bytes.HasPrefix([]byte(authHeader), []byte("Negotiate ")) {
+				t.Errorf("request %d: expected Negotiate, got %q", callCount, authHeader)
+			}
+			w.Header().Set("Www-Authenticate", "Negotiate "+serverChallenge)
+			w.WriteHeader(http.StatusUnauthorized)
+		case 3:
+			if !bytes.HasPrefix([]byte(authHeader), []byte("Negotiate ")) {
+				t.Errorf("request %d: expected Negotiate, got %q", callCount, authHeader)
+			}
+			handshakeCount++
+			w.Header().Set("Www-Authenticate", "Negotiate ")
+			w.WriteHeader(http.StatusOK)
+		case 4:
+			// Respond OK but close the connection — the next request will arrive on a new TCP connection.
+			if !strings.Contains(contentType, "multipart/encrypted") {
+				t.Errorf("request %d: expected sealed body, got Content-Type %q", callCount, contentType)
+			}
+			_, _ = io.ReadAll(r.Body)
+			w.Header().Set("Connection", "close")
+			w.WriteHeader(http.StatusOK)
+		case 5:
+			// New TCP connection: server does not recognise the old RC4 state, reject to force re-auth.
+			w.Header().Set("Www-Authenticate", "Negotiate")
+			w.WriteHeader(http.StatusUnauthorized)
+		case 6:
+			if !bytes.HasPrefix([]byte(authHeader), []byte("Negotiate ")) {
+				t.Errorf("request %d: expected Negotiate, got %q", callCount, authHeader)
+			}
+			w.Header().Set("Www-Authenticate", "Negotiate "+serverChallenge)
+			w.WriteHeader(http.StatusUnauthorized)
+		case 7:
+			if !bytes.HasPrefix([]byte(authHeader), []byte("Negotiate ")) {
+				t.Errorf("request %d: expected Negotiate, got %q", callCount, authHeader)
+			}
+			handshakeCount++
+			w.Header().Set("Www-Authenticate", "Negotiate ")
+			w.WriteHeader(http.StatusOK)
+		case 8:
+			if !strings.Contains(contentType, "multipart/encrypted") {
+				t.Errorf("request %d: expected sealed body (re-auth), got Content-Type %q", callCount, contentType)
+			}
+			_, _ = io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected request %d", callCount)
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	client := &http.Client{Transport: neg}
+
+	req1, err := http.NewRequest("POST", server.URL, io.NopCloser(bytes.NewReader(testData)))
+	if err != nil {
+		t.Fatalf("create request 1: %v", err)
+	}
+	req1.SetBasicAuth(username, password)
+	req1.Header.Set("Content-Type", "application/soap+xml; charset=utf-8")
+
+	resp1, err := client.Do(req1)
+	if err != nil {
+		t.Fatalf("request 1 failed: %v", err)
+	}
+	resp1.Body.Close()
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("request 1: expected 200, got %d", resp1.StatusCode)
+	}
+
+	sessionKey1 := make([]byte, len(neg.Session.ExportedSessionKey))
+	copy(sessionKey1, neg.Session.ExportedSessionKey)
+
+	// Second request: old connection is gone; Negotiator must detect the 401 on the
+	// new connection and perform a fresh NTLM handshake with new session keys.
+	req2, err := http.NewRequest("POST", server.URL, io.NopCloser(bytes.NewReader(testData)))
+	if err != nil {
+		t.Fatalf("create request 2: %v", err)
+	}
+	req2.Header.Set("Content-Type", "application/soap+xml; charset=utf-8")
+
+	resp2, err := client.Do(req2)
+	if err != nil {
+		t.Fatalf("request 2 failed: %v", err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("request 2: expected 200, got %d", resp2.StatusCode)
+	}
+
+	if callCount != 8 {
+		t.Errorf("expected 8 total round trips (4 NTLM + 4 re-auth), got %d", callCount)
+	}
+	if handshakeCount != 2 {
+		t.Errorf("expected 2 complete NTLM handshakes (one per connection), got %d", handshakeCount)
+	}
+	if bytes.Equal(sessionKey1, neg.Session.ExportedSessionKey) {
+		t.Error("expected a fresh session key after re-authentication, but keys are identical")
 	}
 }
 
