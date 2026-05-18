@@ -6,11 +6,12 @@ package ntlmssp
 import (
 	"bytes"
 	"crypto/rc4"
-	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptrace"
 	"strings"
 	"sync"
 )
@@ -159,6 +160,11 @@ type NegotiatorSession struct {
 	// pool) is reused across requests rather than recreated on every RoundTrip call.
 	sealTransport http.RoundTripper
 
+	// activeConn is the TCP connection this session's RC4 cipher state was established
+	// on. If a subsequent sealed request arrives on a different connection, the cipher
+	// state is invalid and the session must be discarded and re-negotiated.
+	activeConn net.Conn
+
 	mu sync.Mutex
 }
 
@@ -265,11 +271,25 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 			_ = req.Body.Close()
 		}
 
+		var connChanged bool
 		if usedSessionKey {
 			if err := SealRequest(req, io.NopCloser(bytes.NewReader(plainBody)), l.Session.clientSealCipher, l.Session.clientSignKey, l.Session.clientSeqNum); err != nil {
 				return nil, err
 			}
 			l.Session.clientSeqNum++
+
+			// Track which TCP connection carries this sealed request. If the transport
+			// opens a new connection, the server has no RC4 state for it and we must
+			// re-authenticate rather than continue streaming stale cipher bytes.
+			prevConn := l.Session.activeConn
+			req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+				GotConn: func(info httptrace.GotConnInfo) {
+					if prevConn != nil && info.Conn != prevConn {
+						connChanged = true
+					}
+					l.Session.activeConn = info.Conn
+				},
+			}))
 		}
 
 		resp, err := rt.RoundTrip(req)
@@ -277,9 +297,10 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 			return nil, err
 		}
 
-		// The session may have gone stale (server restart, session expiry). Re-authenticate
-		// transparently using the cached NTLMv2 hash if we have one.
-		if usedSessionKey && resp.StatusCode == http.StatusUnauthorized && len(l.Session.cachedNtlmV2Hash) > 0 {
+		// The session may have gone stale (server restart, session expiry, or new TCP
+		// connection detected via GotConn). Re-authenticate transparently using the
+		// cached NTLMv2 hash if we have one.
+		if usedSessionKey && (resp.StatusCode == http.StatusUnauthorized || connChanged) && len(l.Session.cachedNtlmV2Hash) > 0 {
 			drainResponse(resp)
 			l.Session.resetSession()
 
@@ -329,6 +350,9 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 				l.Session.clientSeqNum++
 				req.Header.Del("Authorization")
 				drainResponse(resp)
+				req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+					GotConn: func(info httptrace.GotConnInfo) { l.Session.activeConn = info.Conn },
+				}))
 				resp, err = rt.RoundTrip(req)
 				if err != nil {
 					return nil, err
@@ -472,6 +496,9 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 		l.Session.clientSeqNum++
 		req.Header.Del("Authorization")
 		drainResponse(resp)
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+			GotConn: func(info httptrace.GotConnInfo) { l.Session.activeConn = info.Conn },
+		}))
 		resp, err = rt.RoundTrip(req)
 		if err != nil {
 			return originalResp, nil

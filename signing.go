@@ -155,6 +155,7 @@ func (s *NegotiatorSession) resetSession() {
 	s.serverSealCipher = nil
 	s.serverSignKey = nil
 	s.clientSeqNum = 0
+	s.activeConn = nil
 }
 
 func sign(sealCipher *rc4.Cipher, signKey []byte, seq []byte, plaintext []byte) []byte {
