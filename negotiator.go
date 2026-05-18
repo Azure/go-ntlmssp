@@ -218,8 +218,10 @@ func (l Negotiator) transport() http.RoundTripper {
 
 	if l.Session != nil {
 		if l.Session.sealTransport == nil {
+			var p http.Protocols
+			p.SetHTTP1(true) // HTTP/2 out-of-order delivery breaks the sequential RC4 stream
 			l.Session.sealTransport = &http.Transport{
-				TLSNextProto:        make(map[string]func(string, *tls.Conn) http.RoundTripper),
+				Protocols:           &p,
 				MaxConnsPerHost:     1,
 				MaxIdleConnsPerHost: 1,
 			}
