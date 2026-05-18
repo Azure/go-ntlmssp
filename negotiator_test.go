@@ -825,7 +825,7 @@ func TestNegotiatorNegotiateKeyExchange(t *testing.T) {
 	</env:Body>
 </env:Envelope>`)
 	callCount := 0
-	neg := NewSealingNegotiator()
+	neg := Negotiator{Session: new(NegotiatorSession)}
 	var serverDecryptCipher *rc4.Cipher
 
 	// Create a test server that first accepts Basic auth, then upgrades to NTLM
@@ -963,7 +963,7 @@ func TestNegotiatorNegotiateKeyExchangeTwoRequests(t *testing.T) {
 	const password = "testpass"
 
 	callCount := 0
-	neg := NewSealingNegotiator()
+	neg := Negotiator{Session: new(NegotiatorSession)}
 	var serverDecryptCipher *rc4.Cipher
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1213,7 +1213,7 @@ func TestNegotiatorStaleSessionReauth(t *testing.T) {
 	const password = "testpass"
 
 	callCount := 0
-	neg := NewSealingNegotiator()
+	neg := Negotiator{Session: new(NegotiatorSession)}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
@@ -2195,7 +2195,7 @@ func TestNegotiatorSealingUsesOneConnection(t *testing.T) {
 	var remoteAddrs []string
 	var mu sync.Mutex
 
-	neg := NewSealingNegotiator()
+	neg := Negotiator{Session: new(NegotiatorSession)}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
@@ -2297,7 +2297,7 @@ func TestNegotiatorConnectionCloseTriggersReauth(t *testing.T) {
 	callCount := 0
 	handshakeCount := 0
 
-	neg := NewSealingNegotiator()
+	neg := Negotiator{Session: new(NegotiatorSession)}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++

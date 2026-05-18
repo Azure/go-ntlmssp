@@ -230,13 +230,6 @@ func (l Negotiator) transport() http.RoundTripper {
 	return http.DefaultTransport
 }
 
-// NewSealingNegotiator returns a Negotiator configured for NTLM signing and sealing.
-// A private transport with connection pinning and HTTP/2 disabled is provisioned
-// automatically; callers that need a custom transport can set RoundTripper after construction.
-func NewSealingNegotiator() Negotiator {
-	return Negotiator{Session: new(NegotiatorSession)}
-}
-
 // RoundTrip sends the request to the server, handling any authentication
 // re-sends as needed.
 func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
