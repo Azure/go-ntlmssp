@@ -90,7 +90,9 @@ func splitNameForAuth(username string) (user, domain string) {
 		domain = ucomponents[0]
 		user = ucomponents[1]
 	} else if strings.Contains(username, "@") {
-		user = username
+		ucomponents := strings.SplitN(username, "@", 2)
+		user = ucomponents[0]
+		domain = ucomponents[1]
 	} else {
 		user = username
 	}
