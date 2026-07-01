@@ -215,6 +215,19 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 	return authBytes, err
 }
 
+// NewAuthenticateMessageWithKey is like [NewAuthenticateMessage] but also returns the exported
+// session key produced by the NTLMSSP_NEGOTIATE_KEY_EXCH exchange. Callers that need to sign
+// or seal subsequent messages (e.g. WinRM encrypted transport) should use this variant and
+// derive RC4 keys from the returned session key via [NewClientSignKey], [NewClientSealKey],
+// [NewServerSignKey], and [NewServerSealKey].
+//
+// The session key is non-nil only when NTLMSSP_NEGOTIATE_KEY_EXCH was negotiated. Callers
+// must build the sealed payload using the session key BEFORE sending the AUTHENTICATE message,
+// because both must travel in the same HTTP request for connection-level NTLM auth to work.
+func NewAuthenticateMessageWithKey(challenge []byte, username, password string, options *AuthenticateMessageOptions) (authMsg, sessionKey []byte, err error) {
+	return newAuthenticateMessageInternal(challenge, username, password, options)
+}
+
 // ProcessChallenge crafts an AUTHENTICATE message in response to the CHALLENGE message that was received from the server.
 // DomainNeeded is ignored, as the function extracts the domain from the username if needed.
 //
