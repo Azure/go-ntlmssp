@@ -811,6 +811,8 @@ func TestNegotiatorBasicToNTLMUpgrade(t *testing.T) {
 	}
 }
 
+// TestNegotiatorBasicAuthOnly tests that the Negotiator correctly handles
+// servers that only request Basic auth and accept it without upgrading to NTLM
 func TestNegotiatorBasicAuthOnly(t *testing.T) {
 	testData := []byte("test request body")
 	callCount := 0
@@ -1610,8 +1612,11 @@ func TestNewAuthenticateMessage_ChallengeTargetInfoOffsetOverflowNoPanics(t *tes
 	binary.LittleEndian.PutUint16(challenge[42:44], 2)
 	binary.LittleEndian.PutUint32(challenge[44:48], ^uint32(0))
 
-	_, err := NewAuthenticateMessage(challenge, "user", "pass", nil)
-	if err == nil || !strings.Contains(err.Error(), "varField extends beyond buffer") {
-		t.Errorf("Expected varField bounds error, got: %v", err)
+	_, err := NewAuthenticateMessage(challenge, "user", "password", nil)
+	if err == nil {
+		t.Fatal("expected error for challenge with overflowing target info field")
+	}
+	if !strings.Contains(err.Error(), "varField extends beyond buffer") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

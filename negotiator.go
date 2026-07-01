@@ -149,7 +149,6 @@ type Negotiator struct {
 	// It is passed to the negotiate and authenticate messages.
 	// Useful for auditing purposes on the server side.
 	WorkstationName string
-
 }
 
 // RoundTrip sends the request to the server, handling any authentication
