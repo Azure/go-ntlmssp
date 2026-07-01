@@ -186,12 +186,10 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	// First try anonymous, in case the server still finds us authenticated from previous traffic
 	req.Body = body
 	req.Header.Del("Authorization")
-
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
 		return nil, err
 	}
-
 	if resp.StatusCode != http.StatusUnauthorized {
 		// No authentication required, return the response as is
 		return resp, nil
@@ -257,7 +255,6 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	if resp == nil {
 		return originalResp, nil
 	}
-
 	// We could return the original response in case of 401 again, but at this point
 	// it's better to return the latest response from the server, as it might be the case
 	// that we are really not authorized.
@@ -321,7 +318,7 @@ func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Reque
 			WorkstationName: workstation,
 		}
 	}
-	auth, _, err := newAuthenticateMessageInternal(challenge, id.username, id.password, opts)
+	auth, err := NewAuthenticateMessage(challenge, id.username, id.password, opts)
 	if err != nil {
 		return nil
 	}
