@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 )
 
 // negotiatorBody wraps an io.ReadSeeker to allow waiting for its closure
@@ -117,25 +116,6 @@ func GetDomain(username string) (user string, domain string, domainNeeded bool) 
 	return user, domain, domainNeeded
 }
 
-// NegotiatorSession captures the exported session key produced by a completed NTLM
-// key-exchange handshake (NTLMSSP_NEGOTIATE_KEY_EXCH, MS-NLMP §3.4). Assign a
-// *NegotiatorSession to [Negotiator.Session] to have the negotiator populate it.
-//
-// ExportedSessionKey is nil until a handshake that includes key exchange completes.
-// Callers that need to sign or seal messages (e.g. for WinRM encrypted transport) must
-// derive their own keys from ExportedSessionKey using [NewClientSignKey],
-// [NewClientSealKey], [NewServerSignKey], and [NewServerSealKey], and perform the
-// encryption themselves — that logic is out of scope for this package.
-type NegotiatorSession struct {
-	// ExportedSessionKey is the session key exported from the most recently
-	// completed handshake. It is only set when NTLMSSP_NEGOTIATE_KEY_EXCH was
-	// negotiated and the handshake completed successfully. Safe to read after the
-	// RoundTrip call that triggered the handshake has returned.
-	ExportedSessionKey []byte
-
-	mu sync.Mutex
-}
-
 // Negotiator is a [net/http.RoundTripper] decorator that automatically
 // converts basic authentication to NTLM/Negotiate authentication when appropriate.
 //
@@ -170,13 +150,6 @@ type Negotiator struct {
 	// Useful for auditing purposes on the server side.
 	WorkstationName string
 
-	// Session, when non-nil, receives the exported NTLM session key after a
-	// successful key-exchange handshake. Callers that need to sign or seal
-	// subsequent messages (e.g. WinRM) should read Session.ExportedSessionKey
-	// after each authenticated RoundTrip and derive their own RC4 keys from it
-	// using [NewClientSignKey], [NewClientSealKey], [NewServerSignKey], and
-	// [NewServerSealKey].
-	Session *NegotiatorSession
 }
 
 // RoundTrip sends the request to the server, handling any authentication
@@ -281,16 +254,9 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	drainResponse(resp)
 
 	// Second step: process challenge and resend the original body with the authenticate message
-	var sessionKey []byte
-	resp, sessionKey = completeHandshake(rt, resauth, req, id, l.WorkstationName)
+	resp = completeHandshake(rt, resauth, req, id, l.WorkstationName)
 	if resp == nil {
 		return originalResp, nil
-	}
-
-	if len(sessionKey) > 0 && l.Session != nil {
-		l.Session.mu.Lock()
-		l.Session.ExportedSessionKey = sessionKey
-		l.Session.mu.Unlock()
 	}
 
 	// We could return the original response in case of 401 again, but at this point
@@ -337,21 +303,18 @@ func clientHandshake(rt http.RoundTripper, req *http.Request, schema string, dom
 	return res
 }
 
-// completeHandshake sends the AUTHENTICATE message and returns the server response along with
-// the exported session key. The session key is nil unless NTLMSSP_NEGOTIATE_KEY_EXCH was
-// negotiated; callers that don't need it may discard it with _.
-func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Request, id identity, workstation string) (*http.Response, []byte) {
+func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Request, id identity, workstation string) *http.Response {
 	if rewindBody(req) != nil {
-		return nil, nil
+		return nil
 	}
 	challenge, err := resauth.token()
 	if err != nil {
-		return nil, nil
+		return nil
 	}
 	if !resauth.isNTLM() || len(challenge) == 0 {
 		// The only expected schema here is NTLM/Negotiate with a challenge token,
 		// otherwise the negotiation is over.
-		return nil, nil
+		return nil
 	}
 	var opts *AuthenticateMessageOptions
 	if workstation != "" {
@@ -359,14 +322,14 @@ func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Reque
 			WorkstationName: workstation,
 		}
 	}
-	auth, sessionKey, err := newAuthenticateMessageInternal(challenge, id.username, id.password, opts)
+	auth, _, err := newAuthenticateMessageInternal(challenge, id.username, id.password, opts)
 	if err != nil {
-		return nil, nil
+		return nil
 	}
 	req.Header.Set("Authorization", resauth.schema+" "+base64.StdEncoding.EncodeToString(auth))
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
-		return nil, nil
+		return nil
 	}
-	return resp, sessionKey
+	return resp
 }
