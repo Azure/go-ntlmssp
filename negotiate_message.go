@@ -42,7 +42,8 @@ var sealingFlags negotiateFlags = negotiateFlagNTLMSSPNEGOTIATEKEYEXCH |
 // same machine.
 //
 // If the server requires message signing or sealing (e.g. WinRM encrypted transport), use
-// [NewSealingNegotiateMessage] instead and authenticate with [NewAuthenticateMessageWithKey].
+// [NewSealingNegotiateMessage] instead and set [AuthenticateMessageOptions.ExportedSessionKey]
+// when calling [NewAuthenticateMessage].
 func NewNegotiateMessage(domain, workstation string) ([]byte, error) {
 	return newNegotiateMessage(domain, workstation, false)
 }
@@ -50,7 +51,8 @@ func NewNegotiateMessage(domain, workstation string) ([]byte, error) {
 // NewSealingNegotiateMessage creates a NEGOTIATE message that additionally requests
 // NTLMSSP_NEGOTIATE_KEY_EXCH, NTLMSSP_NEGOTIATE_SIGN, and NTLMSSP_NEGOTIATE_SEAL.
 // Use this when the caller intends to sign or seal subsequent messages (e.g. WinRM encrypted
-// transport). Pair it with [NewAuthenticateMessageWithKey] to obtain the exported session key.
+// transport). Set [AuthenticateMessageOptions.ExportedSessionKey] when calling
+// [NewAuthenticateMessage] to obtain the exported session key.
 func NewSealingNegotiateMessage(domain, workstation string) ([]byte, error) {
 	return newNegotiateMessage(domain, workstation, true)
 }

@@ -109,57 +109,27 @@ type AuthenticateMessageOptions struct {
 	// PasswordHashed indicates whether the provided password is already hashed.
 	// If true, the password is expected to be in hexadecimal format.
 	PasswordHashed bool
-}
 
-// newAuthenticateMessageInternal is the shared implementation for building an AUTHENTICATE message.
-// allowKeyExch controls whether NTLMSSP_NEGOTIATE_KEY_EXCH is honoured: if false and the server's
-// challenge requires key exchange, an error is returned. NewAuthenticateMessage passes false;
-// NewAuthenticateMessageWithKey passes true.
-func newAuthenticateMessageInternal(challenge []byte, username, password string, options *AuthenticateMessageOptions, allowKeyExch bool) ([]byte, []byte, error) {
-	if username == "" && password == "" {
-		return nil, nil, errors.New("anonymous authentication not supported")
-	}
-
-	user, domain := splitNameForAuth(username)
-
-	var ntlmV2Hash []byte
-	if options != nil && options.PasswordHashed {
-		hashParts := strings.Split(password, ":")
-		if len(hashParts) > 1 {
-			password = hashParts[1]
-		}
-		hashBytes, err := hex.DecodeString(password)
-		if err != nil {
-			return nil, nil, err
-		}
-		ntlmV2Hash = getNtlmV2Hashed(hashBytes, user, domain)
-	} else {
-		ntlmV2Hash = getNtlmV2Hash(password, user, domain)
-	}
-
-	var workstation string
-	if options != nil {
-		workstation = options.WorkstationName
-	}
-
-	return buildAuthenticateMessageFromHash(challenge, username, ntlmV2Hash, workstation, allowKeyExch)
+	// ExportedSessionKey, if non-nil, receives the exported session key when
+	// NTLMSSP_NEGOTIATE_KEY_EXCH is negotiated. Callers that need to sign or
+	// seal subsequent messages (e.g. WinRM encrypted transport) should set this
+	// field. The key is written before [NewAuthenticateMessage] returns, so
+	// callers can use it to seal the request body that travels in the same HTTP
+	// request as the AUTHENTICATE token.
+	ExportedSessionKey *[]byte
 }
 
 // buildAuthenticateMessageFromHash builds an AUTHENTICATE message using a pre-computed NTLMv2
 // hash instead of a raw password. This allows callers to cache the hash and avoid storing
 // the plain-text password in memory across authentication attempts.
-func buildAuthenticateMessageFromHash(challenge []byte, username string, ntlmV2Hash []byte, workstation string, allowKeyExch bool) ([]byte, []byte, error) {
+func buildAuthenticateMessageFromHash(challenge []byte, username string, ntlmV2Hash []byte, workstation string, exportedSessionKeySink *[]byte) ([]byte, error) {
 	var cm challengeMessage
 	if err := cm.UnmarshalBinary(challenge); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	if cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATELMKEY) {
-		return nil, nil, errors.New("only NTLM v2 is supported, but server requested v1 (NTLMSSP_NEGOTIATE_LM_KEY)")
-	}
-
-	if cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEKEYEXCH) && !allowKeyExch {
-		return nil, nil, errors.New("ntlmssp: server requires key exchange; use NewSealingNegotiateMessage and NewAuthenticateMessageWithKey")
+		return nil, errors.New("only NTLM v2 is supported, but server requested v1 (NTLMSSP_NEGOTIATE_LM_KEY)")
 	}
 
 	am := authenicateMessage{
@@ -178,7 +148,7 @@ func buildAuthenticateMessageFromHash(challenge []byte, username string, ntlmV2H
 
 	clientChallenge := make([]byte, 8)
 	if _, err := rand.Reader.Read(clientChallenge); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	am.NtChallengeResponse = computeNtlmV2Response(ntlmV2Hash,
@@ -190,45 +160,68 @@ func buildAuthenticateMessageFromHash(challenge []byte, username string, ntlmV2H
 			cm.ServerChallenge[:], clientChallenge)
 	}
 
-	var exportedSessionKey []byte
 	if cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEKEYEXCH) {
 		if len(am.NtChallengeResponse) < 16 {
-			return nil, nil, errors.New("invalid NTLMv2 challenge response: missing NTProofStr")
+			return nil, errors.New("invalid NTLMv2 challenge response: missing NTProofStr")
 		}
 		userSessionKey := hmacMd5(ntlmV2Hash, am.NtChallengeResponse[:16])
 
 		cipher, err := rc4.NewCipher(userSessionKey)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 
-	exportedSessionKey := make([]byte, 16)
-	rand.Read(exportedSessionKey)
+		exportedSessionKey := make([]byte, 16)
+		rand.Read(exportedSessionKey)
 		encryptedSessionKey := make([]byte, 16)
 		cipher.XORKeyStream(encryptedSessionKey, exportedSessionKey)
 		am.EncryptedRandomSessionKey = encryptedSessionKey
+
+		if exportedSessionKeySink != nil {
+			*exportedSessionKeySink = exportedSessionKey
+		}
 	}
 
-	authBytes, err := am.MarshalBinary()
-	return authBytes, exportedSessionKey, err
+	return am.MarshalBinary()
 }
 
-// NewAuthenticateMessage creates a new AUTHENTICATE message in response to the CHALLENGE message that was received from the server.
-// The options parameter allows specifying additional settings for the message, it can be nil to use defaults.
-func NewAuthenticateMessage(challenge []byte, username, password string, options *AuthenticateMessageOptions) ([]byte, error) {
-	authBytes, _, err := newAuthenticateMessageInternal(challenge, username, password, options, false)
-	return authBytes, err
-}
-
-// NewAuthenticateMessageWithKey is like [NewAuthenticateMessage] but also returns the exported
-// session key produced by the NTLMSSP_NEGOTIATE_KEY_EXCH exchange. Callers that need to sign
-// or seal subsequent messages (e.g. WinRM encrypted transport) should use this variant.
+// NewAuthenticateMessage creates a new AUTHENTICATE message in response to the CHALLENGE message
+// that was received from the server. The options parameter allows specifying additional settings
+// for the message; it can be nil to use defaults.
 //
-// The session key is non-nil only when NTLMSSP_NEGOTIATE_KEY_EXCH was negotiated. Callers
-// must build the sealed payload using the session key BEFORE sending the AUTHENTICATE message,
-// because both must travel in the same HTTP request for connection-level NTLM auth to work.
-func NewAuthenticateMessageWithKey(challenge []byte, username, password string, options *AuthenticateMessageOptions) (authMsg, sessionKey []byte, err error) {
-	return newAuthenticateMessageInternal(challenge, username, password, options, true)
+// To obtain the exported session key (needed for signing or sealing subsequent messages, e.g.
+// WinRM encrypted transport), set [AuthenticateMessageOptions.ExportedSessionKey] to a non-nil
+// pointer before calling. The key is populated before the function returns.
+func NewAuthenticateMessage(challenge []byte, username, password string, options *AuthenticateMessageOptions) ([]byte, error) {
+	if username == "" && password == "" {
+		return nil, errors.New("anonymous authentication not supported")
+	}
+
+	user, domain := splitNameForAuth(username)
+
+	var ntlmV2Hash []byte
+	if options != nil && options.PasswordHashed {
+		hashParts := strings.Split(password, ":")
+		if len(hashParts) > 1 {
+			password = hashParts[1]
+		}
+		hashBytes, err := hex.DecodeString(password)
+		if err != nil {
+			return nil, err
+		}
+		ntlmV2Hash = getNtlmV2Hashed(hashBytes, user, domain)
+	} else {
+		ntlmV2Hash = getNtlmV2Hash(password, user, domain)
+	}
+
+	var workstation string
+	var exportedSessionKeySink *[]byte
+	if options != nil {
+		workstation = options.WorkstationName
+		exportedSessionKeySink = options.ExportedSessionKey
+	}
+
+	return buildAuthenticateMessageFromHash(challenge, username, ntlmV2Hash, workstation, exportedSessionKeySink)
 }
 
 // ProcessChallenge crafts an AUTHENTICATE message in response to the CHALLENGE message that was received from the server.
