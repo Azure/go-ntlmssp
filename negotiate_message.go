@@ -28,19 +28,39 @@ var defaultFlags = negotiateFlagNTLMSSPNEGOTIATETARGETINFO |
 	negotiateFlagNTLMSSPNEGOTIATEUNICODE |
 	negotiateFlagNTLMSSPNEGOTIATEEXTENDEDSESSIONSECURITY |
 	negotiateFlagNTLMSSPNEGOTIATENTLM |
-	negotiateFlagNTLMSSPNEGOTIATEKEYEXCH |
+	negotiateFlagNTLMSSPNEGOTIATEALWAYSSIGN
+
+var sealingFlags negotiateFlags = negotiateFlagNTLMSSPNEGOTIATEKEYEXCH |
 	negotiateFlagNTLMSSPNEGOTIATESIGN |
 	negotiateFlagNTLMSSPNEGOTIATESEAL
 
-// NewNegotiateMessage creates a new NEGOTIATE message with the flags that this package supports.
+// NewNegotiateMessage creates a new NEGOTIATE message for standard authentication.
 // Note that domain and workstation refer to the client machine, not the user that is authenticating.
 // It is recommended to leave them empty unless you know which are their correct values.
 //
 // The server may ignore these values, or may use them to infer that the client if running on the
 // same machine.
+//
+// If the server requires message signing or sealing (e.g. WinRM encrypted transport), use
+// [NewSealingNegotiateMessage] instead and authenticate with [NewAuthenticateMessageWithKey].
 func NewNegotiateMessage(domain, workstation string) ([]byte, error) {
+	return newNegotiateMessage(domain, workstation, false)
+}
+
+// NewSealingNegotiateMessage creates a NEGOTIATE message that additionally requests
+// NTLMSSP_NEGOTIATE_KEY_EXCH, NTLMSSP_NEGOTIATE_SIGN, and NTLMSSP_NEGOTIATE_SEAL.
+// Use this when the caller intends to sign or seal subsequent messages (e.g. WinRM encrypted
+// transport). Pair it with [NewAuthenticateMessageWithKey] to obtain the exported session key.
+func NewSealingNegotiateMessage(domain, workstation string) ([]byte, error) {
+	return newNegotiateMessage(domain, workstation, true)
+}
+
+func newNegotiateMessage(domain, workstation string, sealing bool) ([]byte, error) {
 	payloadOffset := expMsgBodyLen
 	flags := defaultFlags
+	if sealing {
+		flags |= sealingFlags
+	}
 
 	if domain != "" {
 		flags |= negotiateFlagNTLMSSPNEGOTIATEOEMDOMAINSUPPLIED

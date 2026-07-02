@@ -112,10 +112,10 @@ type AuthenticateMessageOptions struct {
 }
 
 // newAuthenticateMessageInternal is the shared implementation for building an AUTHENTICATE message.
-// It returns the serialized message bytes and the exported session key (non-nil only when
-// NTLMSSP_NEGOTIATE_KEY_EXCH was negotiated). Public callers that do not need the session key
-// should use [NewAuthenticateMessage].
-func newAuthenticateMessageInternal(challenge []byte, username, password string, options *AuthenticateMessageOptions) ([]byte, []byte, error) {
+// allowKeyExch controls whether NTLMSSP_NEGOTIATE_KEY_EXCH is honoured: if false and the server's
+// challenge requires key exchange, an error is returned. NewAuthenticateMessage passes false;
+// NewAuthenticateMessageWithKey passes true.
+func newAuthenticateMessageInternal(challenge []byte, username, password string, options *AuthenticateMessageOptions, allowKeyExch bool) ([]byte, []byte, error) {
 	if username == "" && password == "" {
 		return nil, nil, errors.New("anonymous authentication not supported")
 	}
@@ -142,13 +142,13 @@ func newAuthenticateMessageInternal(challenge []byte, username, password string,
 		workstation = options.WorkstationName
 	}
 
-	return buildAuthenticateMessageFromHash(challenge, username, ntlmV2Hash, workstation)
+	return buildAuthenticateMessageFromHash(challenge, username, ntlmV2Hash, workstation, allowKeyExch)
 }
 
 // buildAuthenticateMessageFromHash builds an AUTHENTICATE message using a pre-computed NTLMv2
 // hash instead of a raw password. This allows callers to cache the hash and avoid storing
 // the plain-text password in memory across authentication attempts.
-func buildAuthenticateMessageFromHash(challenge []byte, username string, ntlmV2Hash []byte, workstation string) ([]byte, []byte, error) {
+func buildAuthenticateMessageFromHash(challenge []byte, username string, ntlmV2Hash []byte, workstation string, allowKeyExch bool) ([]byte, []byte, error) {
 	var cm challengeMessage
 	if err := cm.UnmarshalBinary(challenge); err != nil {
 		return nil, nil, err
@@ -156,6 +156,10 @@ func buildAuthenticateMessageFromHash(challenge []byte, username string, ntlmV2H
 
 	if cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATELMKEY) {
 		return nil, nil, errors.New("only NTLM v2 is supported, but server requested v1 (NTLMSSP_NEGOTIATE_LM_KEY)")
+	}
+
+	if cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEKEYEXCH) && !allowKeyExch {
+		return nil, nil, errors.New("ntlmssp: server requires key exchange; use NewSealingNegotiateMessage and NewAuthenticateMessageWithKey")
 	}
 
 	am := authenicateMessage{
@@ -211,7 +215,7 @@ func buildAuthenticateMessageFromHash(challenge []byte, username string, ntlmV2H
 // NewAuthenticateMessage creates a new AUTHENTICATE message in response to the CHALLENGE message that was received from the server.
 // The options parameter allows specifying additional settings for the message, it can be nil to use defaults.
 func NewAuthenticateMessage(challenge []byte, username, password string, options *AuthenticateMessageOptions) ([]byte, error) {
-	authBytes, _, err := newAuthenticateMessageInternal(challenge, username, password, options)
+	authBytes, _, err := newAuthenticateMessageInternal(challenge, username, password, options, false)
 	return authBytes, err
 }
 
@@ -225,7 +229,7 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 // must build the sealed payload using the session key BEFORE sending the AUTHENTICATE message,
 // because both must travel in the same HTTP request for connection-level NTLM auth to work.
 func NewAuthenticateMessageWithKey(challenge []byte, username, password string, options *AuthenticateMessageOptions) (authMsg, sessionKey []byte, err error) {
-	return newAuthenticateMessageInternal(challenge, username, password, options)
+	return newAuthenticateMessageInternal(challenge, username, password, options, true)
 }
 
 // ProcessChallenge crafts an AUTHENTICATE message in response to the CHALLENGE message that was received from the server.
