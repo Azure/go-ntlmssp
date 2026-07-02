@@ -198,7 +198,8 @@ func buildAuthenticateMessageFromHash(challenge []byte, username string, ntlmV2H
 			return nil, nil, err
 		}
 
-		exportedSessionKey = []byte(rand.Text()[:16])
+	exportedSessionKey := make([]byte, 16)
+	rand.Read(exportedSessionKey)
 		encryptedSessionKey := make([]byte, 16)
 		cipher.XORKeyStream(encryptedSessionKey, exportedSessionKey)
 		am.EncryptedRandomSessionKey = encryptedSessionKey
