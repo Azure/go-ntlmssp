@@ -222,9 +222,7 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 
 // NewAuthenticateMessageWithKey is like [NewAuthenticateMessage] but also returns the exported
 // session key produced by the NTLMSSP_NEGOTIATE_KEY_EXCH exchange. Callers that need to sign
-// or seal subsequent messages (e.g. WinRM encrypted transport) should use this variant and
-// derive RC4 keys from the returned session key via [NewClientSignKey], [NewClientSealKey],
-// [NewServerSignKey], and [NewServerSealKey].
+// or seal subsequent messages (e.g. WinRM encrypted transport) should use this variant.
 //
 // The session key is non-nil only when NTLMSSP_NEGOTIATE_KEY_EXCH was negotiated. Callers
 // must build the sealed payload using the session key BEFORE sending the AUTHENTICATE message,
