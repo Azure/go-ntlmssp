@@ -5,6 +5,7 @@ package ntlmssp
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"strings"
 	"testing"
@@ -163,4 +164,51 @@ func TestNTLMv2Hash(t *testing.T) {
 	if expected := []byte{0x04, 0xb8, 0xe0, 0xba, 0x74, 0x28, 0x9c, 0xc5, 0x40, 0x82, 0x6b, 0xab, 0x1d, 0xee, 0x63, 0xae}; !bytes.Equal(v, expected) {
 		t.Fatalf("expected %v, got %v", expected, v)
 	}
+}
+
+func TestNewAuthenticateMessage_ExportedSessionKey(t *testing.T) {
+	minFlags := negotiateFlagNTLMSSPNEGOTIATEUNICODE | negotiateFlagNTLMSSPNEGOTIATENTLM
+
+	makeChallenge := func(flags negotiateFlags) []byte {
+		c := challengeMessageFields{
+			messageHeader:   newMessageHeader(2),
+			NegotiateFlags:  flags,
+			ServerChallenge: [8]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef},
+		}
+		var buf bytes.Buffer
+		if err := binary.Write(&buf, binary.LittleEndian, &c); err != nil {
+			t.Fatalf("failed to build challenge: %v", err)
+		}
+		return buf.Bytes()
+	}
+
+	t.Run("sink populated when KEY_EXCH negotiated", func(t *testing.T) {
+		ch := makeChallenge(minFlags | negotiateFlagNTLMSSPNEGOTIATEKEYEXCH)
+		var sessionKey []byte
+		if _, err := NewAuthenticateMessage(ch, username, password, &AuthenticateMessageOptions{
+			ExportedSessionKey: &sessionKey,
+		}); err != nil {
+			t.Fatalf("NewAuthenticateMessage failed: %v", err)
+		}
+		if len(sessionKey) != 16 {
+			t.Fatalf("expected 16-byte session key, got %d bytes", len(sessionKey))
+		}
+	})
+
+	t.Run("nil sink is safe with KEY_EXCH", func(t *testing.T) {
+		ch := makeChallenge(minFlags | negotiateFlagNTLMSSPNEGOTIATEKEYEXCH)
+		if _, err := NewAuthenticateMessage(ch, username, password, nil); err != nil {
+			t.Fatalf("NewAuthenticateMessage with nil options failed: %v", err)
+		}
+	})
+
+	t.Run("errors when KEY_EXCH absent", func(t *testing.T) {
+		ch := makeChallenge(minFlags)
+		var sessionKey []byte
+		if _, err := NewAuthenticateMessage(ch, username, password, &AuthenticateMessageOptions{
+			ExportedSessionKey: &sessionKey,
+		}); err == nil {
+			t.Fatal("expected NewAuthenticateMessage to fail when KEY_EXCH not negotiated but ExportedSessionKey requested")
+		}
+	})
 }
