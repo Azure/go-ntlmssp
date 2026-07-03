@@ -131,23 +131,6 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 		return nil, errors.New("anonymous authentication not supported")
 	}
 
-	user, domain := splitNameForAuth(username)
-
-	var ntlmV2Hash []byte
-	if options != nil && options.PasswordHashed {
-		hashParts := strings.Split(password, ":")
-		if len(hashParts) > 1 {
-			password = hashParts[1]
-		}
-		hashBytes, err := hex.DecodeString(password)
-		if err != nil {
-			return nil, err
-		}
-		ntlmV2Hash = getNtlmV2Hashed(hashBytes, user, domain)
-	} else {
-		ntlmV2Hash = getNtlmV2Hash(password, user, domain)
-	}
-
 	var cm challengeMessage
 	if err := cm.UnmarshalBinary(challenge); err != nil {
 		return nil, err
@@ -176,6 +159,21 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 	clientChallenge := make([]byte, 8)
 	if _, err := rand.Reader.Read(clientChallenge); err != nil {
 		return nil, err
+	}
+
+	var ntlmV2Hash []byte
+	if options != nil && options.PasswordHashed {
+		hashParts := strings.Split(password, ":")
+		if len(hashParts) > 1 {
+			password = hashParts[1]
+		}
+		hashBytes, err := hex.DecodeString(password)
+		if err != nil {
+			return nil, err
+		}
+		ntlmV2Hash = getNtlmV2Hashed(hashBytes, am.UserName, am.DomainName)
+	} else {
+		ntlmV2Hash = getNtlmV2Hash(password, am.UserName, am.DomainName)
 	}
 
 	am.NtChallengeResponse = computeNtlmV2Response(ntlmV2Hash,
