@@ -119,10 +119,42 @@ type AuthenticateMessageOptions struct {
 	ExportedSessionKey *[]byte
 }
 
-// buildAuthenticateMessageFromHash builds an AUTHENTICATE message using a pre-computed NTLMv2
-// hash instead of a raw password. This allows callers to cache the hash and avoid storing
-// the plain-text password in memory across authentication attempts.
-func buildAuthenticateMessageFromHash(challenge []byte, username string, ntlmV2Hash []byte, workstation string, exportedSessionKeySink *[]byte) ([]byte, error) {
+// NewAuthenticateMessage creates a new AUTHENTICATE message in response to the CHALLENGE message
+// that was received from the server. The options parameter allows specifying additional settings
+// for the message; it can be nil to use defaults.
+//
+// To obtain the exported session key (needed for signing or sealing subsequent messages, e.g.
+// WinRM encrypted transport), set [AuthenticateMessageOptions.ExportedSessionKey] to a non-nil
+// pointer before calling. The key is populated before the function returns.
+func NewAuthenticateMessage(challenge []byte, username, password string, options *AuthenticateMessageOptions) ([]byte, error) {
+	if username == "" && password == "" {
+		return nil, errors.New("anonymous authentication not supported")
+	}
+
+	user, domain := splitNameForAuth(username)
+
+	var ntlmV2Hash []byte
+	if options != nil && options.PasswordHashed {
+		hashParts := strings.Split(password, ":")
+		if len(hashParts) > 1 {
+			password = hashParts[1]
+		}
+		hashBytes, err := hex.DecodeString(password)
+		if err != nil {
+			return nil, err
+		}
+		ntlmV2Hash = getNtlmV2Hashed(hashBytes, user, domain)
+	} else {
+		ntlmV2Hash = getNtlmV2Hash(password, user, domain)
+	}
+
+	var workstation string
+	var exportedSessionKeySink *[]byte
+	if options != nil {
+		workstation = options.WorkstationName
+		exportedSessionKeySink = options.ExportedSessionKey
+	}
+
 	var cm challengeMessage
 	if err := cm.UnmarshalBinary(challenge); err != nil {
 		return nil, err
@@ -183,45 +215,6 @@ func buildAuthenticateMessageFromHash(challenge []byte, username string, ntlmV2H
 	}
 
 	return am.MarshalBinary()
-}
-
-// NewAuthenticateMessage creates a new AUTHENTICATE message in response to the CHALLENGE message
-// that was received from the server. The options parameter allows specifying additional settings
-// for the message; it can be nil to use defaults.
-//
-// To obtain the exported session key (needed for signing or sealing subsequent messages, e.g.
-// WinRM encrypted transport), set [AuthenticateMessageOptions.ExportedSessionKey] to a non-nil
-// pointer before calling. The key is populated before the function returns.
-func NewAuthenticateMessage(challenge []byte, username, password string, options *AuthenticateMessageOptions) ([]byte, error) {
-	if username == "" && password == "" {
-		return nil, errors.New("anonymous authentication not supported")
-	}
-
-	user, domain := splitNameForAuth(username)
-
-	var ntlmV2Hash []byte
-	if options != nil && options.PasswordHashed {
-		hashParts := strings.Split(password, ":")
-		if len(hashParts) > 1 {
-			password = hashParts[1]
-		}
-		hashBytes, err := hex.DecodeString(password)
-		if err != nil {
-			return nil, err
-		}
-		ntlmV2Hash = getNtlmV2Hashed(hashBytes, user, domain)
-	} else {
-		ntlmV2Hash = getNtlmV2Hash(password, user, domain)
-	}
-
-	var workstation string
-	var exportedSessionKeySink *[]byte
-	if options != nil {
-		workstation = options.WorkstationName
-		exportedSessionKeySink = options.ExportedSessionKey
-	}
-
-	return buildAuthenticateMessageFromHash(challenge, username, ntlmV2Hash, workstation, exportedSessionKeySink)
 }
 
 // ProcessChallenge crafts an AUTHENTICATE message in response to the CHALLENGE message that was received from the server.
