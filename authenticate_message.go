@@ -161,10 +161,8 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 		NegotiateFlags: cm.NegotiateFlags,
 	}
 	am.UserName, am.DomainName = splitNameForAuth(username)
-	var exportedSessionKeySink *[]byte
 	if options != nil {
 		am.Workstation = options.WorkstationName
-		exportedSessionKeySink = options.ExportedSessionKey
 	}
 
 	timestamp := cm.TargetInfo[avIDMsvAvTimestamp]
@@ -206,8 +204,11 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 		cipher.XORKeyStream(encryptedSessionKey, exportedSessionKey)
 		am.EncryptedRandomSessionKey = encryptedSessionKey
 
-		if exportedSessionKeySink != nil {
-			*exportedSessionKeySink = exportedSessionKey
+		if options != nil &&
+			options.ExportedSessionKey != nil {
+			*options.ExportedSessionKey = exportedSessionKey
+		} else {
+			return nil, errors.New("server requested NTLMSSP_NEGOTIATE_KEY_EXCH but no sink provided for exported session key")
 		}
 	}
 
