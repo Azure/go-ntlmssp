@@ -148,13 +148,6 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 		ntlmV2Hash = getNtlmV2Hash(password, user, domain)
 	}
 
-	var workstation string
-	var exportedSessionKeySink *[]byte
-	if options != nil {
-		workstation = options.WorkstationName
-		exportedSessionKeySink = options.ExportedSessionKey
-	}
-
 	var cm challengeMessage
 	if err := cm.UnmarshalBinary(challenge); err != nil {
 		return nil, err
@@ -168,7 +161,11 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 		NegotiateFlags: cm.NegotiateFlags,
 	}
 	am.UserName, am.DomainName = splitNameForAuth(username)
-	am.Workstation = workstation
+	var exportedSessionKeySink *[]byte
+	if options != nil {
+		am.Workstation = options.WorkstationName
+		exportedSessionKeySink = options.ExportedSessionKey
+	}
 
 	timestamp := cm.TargetInfo[avIDMsvAvTimestamp]
 	if timestamp == nil { // no time sent, take current time
