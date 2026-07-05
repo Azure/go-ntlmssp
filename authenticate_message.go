@@ -197,7 +197,9 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 		}
 
 		exportedSessionKey := make([]byte, 16)
-		rand.Read(exportedSessionKey)
+		if _, err := rand.Read(exportedSessionKey); err != nil {
+			return nil, err
+		}
 		encryptedSessionKey := make([]byte, 16)
 		cipher.XORKeyStream(encryptedSessionKey, exportedSessionKey)
 		am.EncryptedRandomSessionKey = encryptedSessionKey
