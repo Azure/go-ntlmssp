@@ -195,20 +195,23 @@ func TestNewAuthenticateMessage_ExportedSessionKey(t *testing.T) {
 		}
 	})
 
-	t.Run("nil sink is safe with KEY_EXCH", func(t *testing.T) {
+	t.Run("errors when KEY_EXCH negotiated but no sink provided", func(t *testing.T) {
 		ch := makeChallenge(minFlags | negotiateFlagNTLMSSPNEGOTIATEKEYEXCH)
-		if _, err := NewAuthenticateMessage(ch, username, password, nil); err != nil {
-			t.Fatalf("NewAuthenticateMessage with nil options failed: %v", err)
+		if _, err := NewAuthenticateMessage(ch, username, password, nil); err == nil {
+			t.Fatal("expected NewAuthenticateMessage to fail when server negotiates KEY_EXCH but no sink is provided")
 		}
 	})
 
-	t.Run("errors when KEY_EXCH absent", func(t *testing.T) {
+	t.Run("sink provided but KEY_EXCH not negotiated is not an error", func(t *testing.T) {
 		ch := makeChallenge(minFlags)
 		var sessionKey []byte
 		if _, err := NewAuthenticateMessage(ch, username, password, &AuthenticateMessageOptions{
 			ExportedSessionKey: &sessionKey,
-		}); err == nil {
-			t.Fatal("expected NewAuthenticateMessage to fail when KEY_EXCH not negotiated but ExportedSessionKey requested")
+		}); err != nil {
+			t.Fatalf("NewAuthenticateMessage failed: %v", err)
+		}
+		if sessionKey != nil {
+			t.Fatalf("expected session key to remain unset, got %d bytes", len(sessionKey))
 		}
 	})
 }
