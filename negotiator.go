@@ -287,7 +287,10 @@ func clientHandshake(rt http.RoundTripper, req *http.Request, schema string, dom
 	if rewindBody(req) != nil {
 		return nil
 	}
-	auth, err := NewNegotiateMessage(domain, workstation)
+	auth, err := NewNegotiateMessageWithOptions(NegotiateMessageOptions{
+		Domain:      domain,
+		Workstation: workstation,
+	})
 	if err != nil {
 		return nil
 	}

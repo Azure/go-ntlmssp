@@ -30,6 +30,20 @@ var defaultFlags = negotiateFlagNTLMSSPNEGOTIATETARGETINFO |
 	negotiateFlagNTLMSSPNEGOTIATENTLM |
 	negotiateFlagNTLMSSPNEGOTIATEALWAYSSIGN
 
+// NegotiateMessageOptions contains optional parameters for the NEGOTIATE message.
+// The zero value is valid and sends neither client domain nor workstation name.
+type NegotiateMessageOptions struct {
+	// Domain is the domain of the client machine.
+	// Per the NTLM spec, it may be empty. When empty, no domain bytes are sent and
+	// NTLMSSP_NEGOTIATE_OEM_DOMAIN_SUPPLIED is left unset.
+	Domain string
+
+	// Workstation is the name of the client machine.
+	// Per the NTLM spec, it may be empty. When empty, no workstation bytes are sent and
+	// NTLMSSP_NEGOTIATE_OEM_WORKSTATION_SUPPLIED is left unset.
+	Workstation string
+}
+
 // NewNegotiateMessage creates a new NEGOTIATE message with the flags that this package supports.
 // Note that domain and workstation refer to the client machine, not the user that is authenticating.
 // It is recommended to leave them empty unless you know which are their correct values.
@@ -37,8 +51,21 @@ var defaultFlags = negotiateFlagNTLMSSPNEGOTIATETARGETINFO |
 // The server may ignore these values, or may use them to infer that the client if running on the
 // same machine.
 func NewNegotiateMessage(domain, workstation string) ([]byte, error) {
+	return NewNegotiateMessageWithOptions(NegotiateMessageOptions{
+		Domain:      domain,
+		Workstation: workstation,
+	})
+}
+
+// NewNegotiateMessageWithOptions creates a new NEGOTIATE message from the supplied options.
+// Use this function when setting optional NEGOTIATE message fields. To preserve compatibility
+// with existing callers, [NewNegotiateMessage] remains available for passing only the client
+// domain and workstation values.
+func NewNegotiateMessageWithOptions(options NegotiateMessageOptions) ([]byte, error) {
 	payloadOffset := expMsgBodyLen
 	flags := defaultFlags
+	domain := options.Domain
+	workstation := options.Workstation
 
 	if domain != "" {
 		flags |= negotiateFlagNTLMSSPNEGOTIATEOEMDOMAINSUPPLIED
