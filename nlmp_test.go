@@ -67,7 +67,10 @@ func TestUsernameDomainWorkstation(t *testing.T) {
 			t.Fatalf("domain not correct, expected %v got %v", tdomain, table.xd)
 		}
 
-		tb, err := NewNegotiateMessage(tdomain, table.w)
+		tb, err := NewNegotiateMessageWithOptions(NegotiateMessageOptions{
+			Domain:      tdomain,
+			Workstation: table.w,
+		})
 		if err != nil {
 			t.Fatalf("error creating new negotiate message with domain '%v' and workstation '%v'", tdomain, table.w)
 		}

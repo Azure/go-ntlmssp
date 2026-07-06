@@ -36,7 +36,11 @@ jobs:
           Write-Host "Setting up NTLM test environment using setup script..."
 
           # Generate a random password for this test run
-          $randomPassword = -join ((65..90) + (97..122) + (48..57) + @(33,35,36,37,38,42,43,45,61,63,64) | Get-Random -Count 16 | % {[char]$_})
+          $upper = 65..90 | Get-Random -Count 4 | ForEach-Object { [char]$_ }
+          $lower = 97..122 | Get-Random -Count 4 | ForEach-Object { [char]$_ }
+          $digits = 48..57 | Get-Random -Count 4 | ForEach-Object { [char]$_ }
+          $symbols = @(33,35,36,37,38,42,43,45,61,63,64) | Get-Random -Count 4 | ForEach-Object { [char]$_ }
+          $randomPassword = -join (($upper + $lower + $digits + $symbols) | Get-Random -Count 16)
           Write-Host "Generated random test password"
 
           # Run the setup script with random password

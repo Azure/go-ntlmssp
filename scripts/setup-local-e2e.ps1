@@ -8,9 +8,18 @@ param(
     [string]$TestPassword = ""
 )
 
+function New-TestPassword {
+    $upper = 65..90 | Get-Random -Count 4 | ForEach-Object { [char]$_ }
+    $lower = 97..122 | Get-Random -Count 4 | ForEach-Object { [char]$_ }
+    $digits = 48..57 | Get-Random -Count 4 | ForEach-Object { [char]$_ }
+    $symbols = @(33,35,36,37,38,42,43,45,61,63,64) | Get-Random -Count 4 | ForEach-Object { [char]$_ }
+
+    return -join (($upper + $lower + $digits + $symbols) | Get-Random -Count 16)
+}
+
 # Generate a random password if none provided
 if ([string]::IsNullOrEmpty($TestPassword)) {
-    $TestPassword = -join ((65..90) + (97..122) + (48..57) + @(33,35,36,37,38,42,43,45,61,63,64) | Get-Random -Count 16 | % {[char]$_})
+    $TestPassword = New-TestPassword
     Write-Host "Generated random test password for security" -ForegroundColor Cyan
 }
 
