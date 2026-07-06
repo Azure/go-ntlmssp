@@ -188,13 +188,29 @@ func TestNewAuthenticateMessage_ExportedSessionKey(t *testing.T) {
 	t.Run("sink populated when KEY_EXCH negotiated", func(t *testing.T) {
 		ch := makeChallenge(minFlags | negotiateFlagNTLMSSPNEGOTIATEKEYEXCH)
 		var sessionKey []byte
-		if _, err := NewAuthenticateMessage(ch, username, password, &AuthenticateMessageOptions{
+		am, err := NewAuthenticateMessage(ch, username, password, &AuthenticateMessageOptions{
 			ExportedSessionKey: &sessionKey,
-		}); err != nil {
+		})
+		if err != nil {
 			t.Fatalf("NewAuthenticateMessage failed: %v", err)
 		}
 		if len(sessionKey) != 16 {
 			t.Fatalf("expected 16-byte session key, got %d bytes", len(sessionKey))
+		}
+
+		var f authenticateMessageFields
+		if err := binary.Read(bytes.NewReader(am), binary.LittleEndian, &f); err != nil {
+			t.Fatalf("failed to parse AUTHENTICATE message: %v", err)
+		}
+		if f.SessionKey.Len != 16 || f.SessionKey.MaxLen != 16 {
+			t.Fatalf("expected 16-byte SessionKey security buffer, got Len=%d MaxLen=%d", f.SessionKey.Len, f.SessionKey.MaxLen)
+		}
+		encryptedKey, err := f.SessionKey.ReadFrom(am)
+		if err != nil {
+			t.Fatalf("failed to read SessionKey buffer: %v", err)
+		}
+		if len(encryptedKey) != 16 {
+			t.Fatalf("expected 16-byte encrypted session key in message body, got %d bytes", len(encryptedKey))
 		}
 	})
 
@@ -208,13 +224,22 @@ func TestNewAuthenticateMessage_ExportedSessionKey(t *testing.T) {
 	t.Run("sink provided but KEY_EXCH not negotiated is not an error", func(t *testing.T) {
 		ch := makeChallenge(minFlags)
 		var sessionKey []byte
-		if _, err := NewAuthenticateMessage(ch, username, password, &AuthenticateMessageOptions{
+		am, err := NewAuthenticateMessage(ch, username, password, &AuthenticateMessageOptions{
 			ExportedSessionKey: &sessionKey,
-		}); err != nil {
+		})
+		if err != nil {
 			t.Fatalf("NewAuthenticateMessage failed: %v", err)
 		}
 		if sessionKey != nil {
 			t.Fatalf("expected session key to remain unset, got %d bytes", len(sessionKey))
+		}
+
+		var f authenticateMessageFields
+		if err := binary.Read(bytes.NewReader(am), binary.LittleEndian, &f); err != nil {
+			t.Fatalf("failed to parse AUTHENTICATE message: %v", err)
+		}
+		if f.SessionKey != (varField{}) {
+			t.Fatalf("expected all-zero SessionKey security buffer when KEY_EXCH not negotiated, got %+v", f.SessionKey)
 		}
 	})
 }
