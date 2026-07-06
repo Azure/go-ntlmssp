@@ -34,7 +34,6 @@ var sealingFlags negotiateFlags = negotiateFlagNTLMSSPNEGOTIATEKEYEXCH |
 	negotiateFlagNTLMSSPNEGOTIATESIGN |
 	negotiateFlagNTLMSSPNEGOTIATESEAL
 
-// NewNegotiateMessage creates a new NEGOTIATE message for standard authentication.
 // NegotiateMessageOptions contains optional parameters for the NEGOTIATE message.
 // The zero value is valid and sends neither client domain nor workstation name.
 type NegotiateMessageOptions struct {
@@ -47,6 +46,12 @@ type NegotiateMessageOptions struct {
 	// Per the NTLM spec, it may be empty. When empty, no workstation bytes are sent and
 	// NTLMSSP_NEGOTIATE_OEM_WORKSTATION_SUPPLIED is left unset.
 	Workstation string
+
+	// RequestSealing additionally requests NTLMSSP_NEGOTIATE_KEY_EXCH, NTLMSSP_NEGOTIATE_SIGN,
+	// and NTLMSSP_NEGOTIATE_SEAL. Set this when the caller intends to sign or seal subsequent
+	// messages (e.g. WinRM encrypted transport). Pair it with
+	// [AuthenticateMessageOptions.ExportedSessionKey] to obtain the exported session key.
+	RequestSealing bool
 }
 
 // NewNegotiateMessage creates a new NEGOTIATE message with the flags that this package supports.
@@ -57,8 +62,8 @@ type NegotiateMessageOptions struct {
 // same machine.
 //
 // If the server requires message signing or sealing (e.g. WinRM encrypted transport), use
-// [NewSealingNegotiateMessage] instead and set [AuthenticateMessageOptions.ExportedSessionKey]
-// when calling [NewAuthenticateMessage].
+// [NewNegotiateMessageWithOptions] instead and set [NegotiateMessageOptions.RequestSealing] along
+// with [AuthenticateMessageOptions.ExportedSessionKey] when calling [NewAuthenticateMessage].
 func NewNegotiateMessage(domain, workstation string) ([]byte, error) {
 	return NewNegotiateMessageWithOptions(NegotiateMessageOptions{
 		Domain:      domain,
@@ -75,6 +80,10 @@ func NewNegotiateMessageWithOptions(options NegotiateMessageOptions) ([]byte, er
 	flags := defaultFlags
 	domain := options.Domain
 	workstation := options.Workstation
+
+	if options.RequestSealing {
+		flags |= sealingFlags
+	}
 
 	if domain != "" {
 		flags |= negotiateFlagNTLMSSPNEGOTIATEOEMDOMAINSUPPLIED
