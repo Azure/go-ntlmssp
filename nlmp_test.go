@@ -198,10 +198,10 @@ func TestNewAuthenticateMessage_ExportedSessionKey(t *testing.T) {
 		}
 	})
 
-	t.Run("errors when KEY_EXCH negotiated but no sink provided", func(t *testing.T) {
+	t.Run("does not error when KEY_EXCH negotiated but no sink provided", func(t *testing.T) {
 		ch := makeChallenge(minFlags | negotiateFlagNTLMSSPNEGOTIATEKEYEXCH)
-		if _, err := NewAuthenticateMessage(ch, username, password, nil); err == nil {
-			t.Fatal("expected NewAuthenticateMessage to fail when server negotiates KEY_EXCH but no sink is provided")
+		if _, err := NewAuthenticateMessage(ch, username, password, nil); err != nil {
+			t.Fatalf("NewAuthenticateMessage failed: %v", err)
 		}
 	})
 

@@ -204,11 +204,8 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 		cipher.XORKeyStream(encryptedSessionKey, exportedSessionKey)
 		am.EncryptedRandomSessionKey = encryptedSessionKey
 
-		if options != nil &&
-			options.ExportedSessionKey != nil {
+		if options != nil && options.ExportedSessionKey != nil {
 			*options.ExportedSessionKey = exportedSessionKey
-		} else {
-			return nil, errors.New("server requested NTLMSSP_NEGOTIATE_KEY_EXCH but no sink provided for exported session key")
 		}
 	}
 
