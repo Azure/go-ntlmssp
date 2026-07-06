@@ -58,7 +58,9 @@ func (m *authenicateMessage) MarshalBinary() ([]byte, error) {
 		DomainName:          newVarField(&ptr, len(domain)),
 		UserName:            newVarField(&ptr, len(user)),
 		Workstation:         newVarField(&ptr, len(workstation)),
-		SessionKey:          newVarField(&ptr, len(m.EncryptedRandomSessionKey)),
+	}
+	if len(m.EncryptedRandomSessionKey) > 0 {
+		f.SessionKey = newVarField(&ptr, len(m.EncryptedRandomSessionKey))
 	}
 
 	f.NegotiateFlags.Unset(negotiateFlagNTLMSSPNEGOTIATEVERSION)
