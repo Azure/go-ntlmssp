@@ -242,4 +242,19 @@ func TestNewAuthenticateMessage_ExportedSessionKey(t *testing.T) {
 			t.Fatalf("expected all-zero SessionKey security buffer when KEY_EXCH not negotiated, got %+v", f.SessionKey)
 		}
 	})
+
+	t.Run("stale key is reset when NewAuthenticateMessage errors", func(t *testing.T) {
+		ch := makeChallenge(minFlags | negotiateFlagNTLMSSPNEGOTIATEKEYEXCH)
+		sessionKey := []byte{0xde, 0xad, 0xbe, 0xef}
+		_, err := NewAuthenticateMessage(ch, username, "not-valid-hex", &AuthenticateMessageOptions{
+			PasswordHashed:     true,
+			ExportedSessionKey: &sessionKey,
+		})
+		if err == nil {
+			t.Fatalf("expected NewAuthenticateMessage to fail on invalid hash")
+		}
+		if sessionKey != nil {
+			t.Fatalf("expected stale session key to be reset to nil, got %d bytes", len(sessionKey))
+		}
+	})
 }
