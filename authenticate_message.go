@@ -196,9 +196,9 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 		if len(am.NtChallengeResponse) < 16 {
 			return nil, errors.New("invalid NTLMv2 challenge response: missing NTProofStr")
 		}
-		userSessionKey := hmacMd5(ntlmV2Hash, am.NtChallengeResponse[:16])
+		sessionBaseKey := hmacMd5(ntlmV2Hash, am.NtChallengeResponse[:16])
 
-		cipher, err := rc4.NewCipher(userSessionKey)
+		cipher, err := rc4.NewCipher(sessionBaseKey)
 		if err != nil {
 			return nil, err
 		}
