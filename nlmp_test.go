@@ -257,4 +257,18 @@ func TestNewAuthenticateMessage_ExportedSessionKey(t *testing.T) {
 			t.Fatalf("expected stale session key to be reset to nil, got %d bytes", len(sessionKey))
 		}
 	})
+
+	t.Run("stale key is reset when server requests NTLM v1 (LM_KEY)", func(t *testing.T) {
+		ch := makeChallenge(minFlags | negotiateFlagNTLMSSPNEGOTIATELMKEY)
+		sessionKey := []byte{0xde, 0xad, 0xbe, 0xef}
+		_, err := NewAuthenticateMessage(ch, username, password, &AuthenticateMessageOptions{
+			ExportedSessionKey: &sessionKey,
+		})
+		if err == nil {
+			t.Fatalf("expected NewAuthenticateMessage to fail when server requests LM_KEY")
+		}
+		if sessionKey != nil {
+			t.Fatalf("expected stale session key to be reset to nil, got %d bytes", len(sessionKey))
+		}
+	})
 }

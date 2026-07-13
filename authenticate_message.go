@@ -130,6 +130,10 @@ type AuthenticateMessageOptions struct {
 // pointer before calling. The pointed-to key is reset to nil at the start of the call and is
 // populated before the function returns only if NTLMSSP_NEGOTIATE_KEY_EXCH is negotiated.
 func NewAuthenticateMessage(challenge []byte, username, password string, options *AuthenticateMessageOptions) ([]byte, error) {
+	if options != nil && options.ExportedSessionKey != nil {
+		*options.ExportedSessionKey = nil
+	}
+
 	if username == "" && password == "" {
 		return nil, errors.New("anonymous authentication not supported")
 	}
@@ -149,9 +153,6 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 	am.UserName, am.DomainName = splitNameForAuth(username)
 	if options != nil {
 		am.Workstation = options.WorkstationName
-		if options.ExportedSessionKey != nil {
-			*options.ExportedSessionKey = nil
-		}
 	}
 
 	timestamp := cm.TargetInfo[avIDMsvAvTimestamp]
