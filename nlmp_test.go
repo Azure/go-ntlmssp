@@ -185,61 +185,92 @@ func TestNewAuthenticateMessage_ExportedSessionKey(t *testing.T) {
 		return buf.Bytes()
 	}
 
-	t.Run("sink populated when KEY_EXCH negotiated", func(t *testing.T) {
-		ch := makeChallenge(minFlags | negotiateFlagNTLMSSPNEGOTIATEKEYEXCH)
-		var sessionKey []byte
-		am, err := NewAuthenticateMessage(ch, username, password, &AuthenticateMessageOptions{
-			ExportedSessionKey: &sessionKey,
-		})
-		if err != nil {
-			t.Fatalf("NewAuthenticateMessage failed: %v", err)
-		}
-		if len(sessionKey) != 16 {
-			t.Fatalf("expected 16-byte session key, got %d bytes", len(sessionKey))
-		}
-
+	// parseAuthenticateMessage extracts the fixed header and NtChallengeResponse
+	// from a marshaled AUTHENTICATE message.
+	parseAuthenticateMessage := func(t *testing.T, am []byte) (authenticateMessageFields, []byte) {
+		t.Helper()
 		var f authenticateMessageFields
 		if err := binary.Read(bytes.NewReader(am), binary.LittleEndian, &f); err != nil {
 			t.Fatalf("failed to parse AUTHENTICATE message: %v", err)
 		}
-		if f.SessionKey.Len != 16 || f.SessionKey.MaxLen != 16 {
-			t.Fatalf("expected 16-byte SessionKey security buffer, got Len=%d MaxLen=%d", f.SessionKey.Len, f.SessionKey.MaxLen)
-		}
-		encryptedKey, err := f.SessionKey.ReadFrom(am)
+		ntChallengeResponse, err := f.NtChallengeResponse.ReadFrom(am)
 		if err != nil {
-			t.Fatalf("failed to read SessionKey buffer: %v", err)
+			t.Fatalf("failed to read NtChallengeResponse buffer: %v", err)
 		}
-		if len(encryptedKey) != 16 {
-			t.Fatalf("expected 16-byte encrypted session key in message body, got %d bytes", len(encryptedKey))
-		}
-	})
+		return f, ntChallengeResponse
+	}
+
+	// MS-NLMP 3.1.5.1.2: a random ExportedSessionKey, encrypted and sent to the
+	// server, is only generated when KEY_EXCH is negotiated together with SIGN
+	// or SEAL. In every other case ExportedSessionKey is the KeyExchangeKey
+	// itself and no encrypted key is sent.
+	flagMatrix := []struct {
+		name               string
+		flags              negotiateFlags
+		expectEncryptedKey bool
+	}{
+		{"KEY_EXCH + SIGN", negotiateFlagNTLMSSPNEGOTIATEKEYEXCH | negotiateFlagNTLMSSPNEGOTIATESIGN, true},
+		{"KEY_EXCH + SEAL", negotiateFlagNTLMSSPNEGOTIATEKEYEXCH | negotiateFlagNTLMSSPNEGOTIATESEAL, true},
+		{"KEY_EXCH only", negotiateFlagNTLMSSPNEGOTIATEKEYEXCH, false},
+		{"SIGN only", negotiateFlagNTLMSSPNEGOTIATESIGN, false},
+		{"SEAL only", negotiateFlagNTLMSSPNEGOTIATESEAL, false},
+		{"neither", 0, false},
+	}
+
+	for _, tc := range flagMatrix {
+		t.Run(tc.name, func(t *testing.T) {
+			ch := makeChallenge(minFlags | tc.flags)
+			var sessionKey []byte
+			am, err := NewAuthenticateMessage(ch, username, password, &AuthenticateMessageOptions{
+				ExportedSessionKey: &sessionKey,
+			})
+			if err != nil {
+				t.Fatalf("NewAuthenticateMessage failed: %v", err)
+			}
+			if len(sessionKey) != 16 {
+				t.Fatalf("expected 16-byte exported session key, got %d bytes", len(sessionKey))
+			}
+
+			f, ntChallengeResponse := parseAuthenticateMessage(t, am)
+
+			if tc.expectEncryptedKey {
+				if f.SessionKey.Len != 16 || f.SessionKey.MaxLen != 16 {
+					t.Fatalf("expected 16-byte SessionKey security buffer, got Len=%d MaxLen=%d", f.SessionKey.Len, f.SessionKey.MaxLen)
+				}
+				encryptedKey, err := f.SessionKey.ReadFrom(am)
+				if err != nil {
+					t.Fatalf("failed to read SessionKey buffer: %v", err)
+				}
+				if len(encryptedKey) != 16 {
+					t.Fatalf("expected 16-byte encrypted session key in message body, got %d bytes", len(encryptedKey))
+				}
+
+				// the exported key must be random, i.e. not simply the KeyExchangeKey
+				ntlmV2Hash := getNtlmV2Hash(password, username, "")
+				keyExchangeKey := hmacMd5(ntlmV2Hash, ntChallengeResponse[:16])
+				if bytes.Equal(sessionKey, keyExchangeKey) {
+					t.Fatalf("expected random exported session key, got KeyExchangeKey verbatim")
+				}
+			} else {
+				if f.SessionKey != (varField{}) {
+					t.Fatalf("expected no encrypted session key on the wire, got %+v", f.SessionKey)
+				}
+
+				// without SIGN/SEAL (or without KEY_EXCH), ExportedSessionKey must be
+				// exactly the KeyExchangeKey per MS-NLMP 3.1.5.1.2
+				ntlmV2Hash := getNtlmV2Hash(password, username, "")
+				keyExchangeKey := hmacMd5(ntlmV2Hash, ntChallengeResponse[:16])
+				if !bytes.Equal(sessionKey, keyExchangeKey) {
+					t.Fatalf("expected exported session key to equal KeyExchangeKey %v, got %v", keyExchangeKey, sessionKey)
+				}
+			}
+		})
+	}
 
 	t.Run("does not error when KEY_EXCH negotiated but no sink provided", func(t *testing.T) {
-		ch := makeChallenge(minFlags | negotiateFlagNTLMSSPNEGOTIATEKEYEXCH)
+		ch := makeChallenge(minFlags | negotiateFlagNTLMSSPNEGOTIATEKEYEXCH | negotiateFlagNTLMSSPNEGOTIATESIGN)
 		if _, err := NewAuthenticateMessage(ch, username, password, nil); err != nil {
 			t.Fatalf("NewAuthenticateMessage failed: %v", err)
-		}
-	})
-
-	t.Run("sink provided but KEY_EXCH not negotiated is not an error", func(t *testing.T) {
-		ch := makeChallenge(minFlags)
-		var sessionKey []byte
-		am, err := NewAuthenticateMessage(ch, username, password, &AuthenticateMessageOptions{
-			ExportedSessionKey: &sessionKey,
-		})
-		if err != nil {
-			t.Fatalf("NewAuthenticateMessage failed: %v", err)
-		}
-		if sessionKey != nil {
-			t.Fatalf("expected session key to remain unset, got %d bytes", len(sessionKey))
-		}
-
-		var f authenticateMessageFields
-		if err := binary.Read(bytes.NewReader(am), binary.LittleEndian, &f); err != nil {
-			t.Fatalf("failed to parse AUTHENTICATE message: %v", err)
-		}
-		if f.SessionKey != (varField{}) {
-			t.Fatalf("expected all-zero SessionKey security buffer when KEY_EXCH not negotiated, got %+v", f.SessionKey)
 		}
 	})
 

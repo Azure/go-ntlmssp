@@ -22,7 +22,7 @@ type authenicateMessage struct {
 	UserName    string
 	Workstation string
 
-	// only set if negotiateFlag_NTLMSSP_NEGOTIATE_KEY_EXCH
+	// only set if NTLMSSP_NEGOTIATE_KEY_EXCH is negotiated together with SIGN or SEAL
 	EncryptedRandomSessionKey []byte
 
 	NegotiateFlags negotiateFlags
@@ -112,12 +112,17 @@ type AuthenticateMessageOptions struct {
 	// If true, the password is expected to be in hexadecimal format.
 	PasswordHashed bool
 
-	// ExportedSessionKey, if non-nil, receives the exported session key when
-	// NTLMSSP_NEGOTIATE_KEY_EXCH is negotiated. Callers that need to sign or
-	// seal subsequent messages (e.g. WinRM encrypted transport) should set this
-	// field. The key is written before [NewAuthenticateMessage] returns, so
-	// callers can use it to seal the request body that travels in the same HTTP
-	// request as the AUTHENTICATE token.
+	// ExportedSessionKey, if non-nil, receives the exported session key
+	// (MS-NLMP 3.1.5.1.2). Callers that need to sign or seal subsequent
+	// messages (e.g. WinRM encrypted transport) should set this field. The
+	// key is written before [NewAuthenticateMessage] returns, so callers can
+	// use it to seal the request body that travels in the same HTTP request
+	// as the AUTHENTICATE token.
+	//
+	// When NTLMSSP_NEGOTIATE_KEY_EXCH is negotiated together with SIGN or
+	// SEAL, this is a random key sent to the server encrypted with the
+	// KeyExchangeKey. Otherwise it is the KeyExchangeKey itself, and no
+	// encrypted key is sent on the wire.
 	ExportedSessionKey *[]byte
 }
 
@@ -128,7 +133,8 @@ type AuthenticateMessageOptions struct {
 // To obtain the exported session key (needed for signing or sealing subsequent messages, e.g.
 // WinRM encrypted transport), set [AuthenticateMessageOptions.ExportedSessionKey] to a non-nil
 // pointer before calling. The pointed-to key is reset to nil at the start of the call and is
-// populated before the function returns only if NTLMSSP_NEGOTIATE_KEY_EXCH is negotiated.
+// always populated before the function returns (see [AuthenticateMessageOptions.ExportedSessionKey]
+// for how the key is derived).
 func NewAuthenticateMessage(challenge []byte, username, password string, options *AuthenticateMessageOptions) ([]byte, error) {
 	if options != nil && options.ExportedSessionKey != nil {
 		*options.ExportedSessionKey = nil
@@ -192,28 +198,38 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 			cm.ServerChallenge[:], clientChallenge)
 	}
 
-	if cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEKEYEXCH) {
-		if len(am.NtChallengeResponse) < 16 {
-			return nil, errors.New("invalid NTLMv2 challenge response: missing NTProofStr")
-		}
-		sessionBaseKey := hmacMd5(ntlmV2Hash, am.NtChallengeResponse[:16])
+	if len(am.NtChallengeResponse) < 16 {
+		return nil, errors.New("invalid NTLMv2 challenge response: missing NTProofStr")
+	}
+	// KeyExchangeKey is the NTLMv2 session base key (MS-NLMP 3.1.5.1.2), independent
+	// of whether KEY_EXCH is negotiated.
+	keyExchangeKey := hmacMd5(ntlmV2Hash, am.NtChallengeResponse[:16])
 
-		cipher, err := rc4.NewCipher(sessionBaseKey)
-		if err != nil {
+	signOrSeal := cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATESIGN) ||
+		cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATESEAL)
+
+	var exportedSessionKey []byte
+	if cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEKEYEXCH) && signOrSeal {
+		exportedSessionKey = make([]byte, 16)
+		if _, err := rand.Read(exportedSessionKey); err != nil {
 			return nil, err
 		}
 
-		exportedSessionKey := make([]byte, 16)
-		if _, err := rand.Read(exportedSessionKey); err != nil {
+		cipher, err := rc4.NewCipher(keyExchangeKey)
+		if err != nil {
 			return nil, err
 		}
 		encryptedSessionKey := make([]byte, 16)
 		cipher.XORKeyStream(encryptedSessionKey, exportedSessionKey)
 		am.EncryptedRandomSessionKey = encryptedSessionKey
+	} else {
+		// No KEY_EXCH, or no SIGN/SEAL negotiated: the exported session key is the
+		// KeyExchangeKey itself, and no encrypted key is sent to the server.
+		exportedSessionKey = keyExchangeKey
+	}
 
-		if options != nil && options.ExportedSessionKey != nil {
-			*options.ExportedSessionKey = exportedSessionKey
-		}
+	if options != nil && options.ExportedSessionKey != nil {
+		*options.ExportedSessionKey = exportedSessionKey
 	}
 
 	return am.MarshalBinary()
