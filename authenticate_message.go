@@ -224,10 +224,13 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 	am.NtChallengeResponse = computeNtlmV2Response(ntlmV2Hash,
 		cm.ServerChallenge[:], clientChallenge, timestamp, cm.TargetInfoRaw)
 
-	if cm.TargetInfoRaw == nil ||
-		cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEKEYEXCH) {
+	if cm.TargetInfoRaw == nil {
 		am.LmChallengeResponse = computeLmV2Response(ntlmV2Hash,
 			cm.ServerChallenge[:], clientChallenge)
+	} else {
+		// MS-NLMP 3.1.5.1.2: when TargetInfo is present (e.g. carrying a timestamp),
+		// the client SHOULD send Z(24) instead of a real, password-derived LM response.
+		am.LmChallengeResponse = make([]byte, 24)
 	}
 
 	if len(am.NtChallengeResponse) < 16 {

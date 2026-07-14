@@ -184,6 +184,83 @@ func makeTestChallenge(t *testing.T, flags negotiateFlags) []byte {
 	return buf.Bytes()
 }
 
+// makeTestChallengeWithTargetInfo builds a CHALLENGE_MESSAGE with the given flags and a
+// minimal (AV_EOL-only) TargetInfo AV_PAIR list, so that cm.TargetInfoRaw is non-nil.
+func makeTestChallengeWithTargetInfo(t *testing.T, flags negotiateFlags) []byte {
+	t.Helper()
+	targetInfo := []byte{0x00, 0x00, 0x00, 0x00} // avIDMsvAvEOL, length 0
+	payloadOffset := binary.Size(&challengeMessageFields{})
+	c := challengeMessageFields{
+		messageHeader:   newMessageHeader(2),
+		NegotiateFlags:  flags,
+		ServerChallenge: [8]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef},
+		TargetInfo:      newVarField(&payloadOffset, len(targetInfo)),
+	}
+	var buf bytes.Buffer
+	if err := binary.Write(&buf, binary.LittleEndian, &c); err != nil {
+		t.Fatalf("failed to build challenge: %v", err)
+	}
+	if _, err := buf.Write(targetInfo); err != nil {
+		t.Fatalf("failed to write target info: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestNewAuthenticateMessage_LmChallengeResponse(t *testing.T) {
+	minFlags := negotiateFlagNTLMSSPNEGOTIATEUNICODE | negotiateFlagNTLMSSPNEGOTIATENTLM
+
+	parseLmChallengeResponse := func(t *testing.T, am []byte) []byte {
+		t.Helper()
+		var f authenticateMessageFields
+		if err := binary.Read(bytes.NewReader(am), binary.LittleEndian, &f); err != nil {
+			t.Fatalf("failed to parse AUTHENTICATE message: %v", err)
+		}
+		lm, err := f.LmChallengeResponse.ReadFrom(am)
+		if err != nil {
+			t.Fatalf("failed to read LmChallengeResponse buffer: %v", err)
+		}
+		return lm
+	}
+
+	t.Run("no TargetInfo: real LMv2 response is sent", func(t *testing.T) {
+		ch := makeTestChallenge(t, minFlags)
+		am, err := NewAuthenticateMessage(ch, username, password, nil)
+		if err != nil {
+			t.Fatalf("NewAuthenticateMessage failed: %v", err)
+		}
+		lm := parseLmChallengeResponse(t, am)
+		if len(lm) != 24 {
+			t.Fatalf("expected 24-byte LmChallengeResponse, got %d bytes", len(lm))
+		}
+		if bytes.Equal(lm, make([]byte, 24)) {
+			t.Fatalf("expected a real, password-derived LMv2 response, got Z(24)")
+		}
+	})
+
+	// MS-NLMP 3.1.5.1.2: when TargetInfo is present, the client sends Z(24) regardless of
+	// KEY_EXCH -- KEY_EXCH must not resurrect a real, password-derived LM response.
+	for _, tc := range []struct {
+		name  string
+		flags negotiateFlags
+	}{
+		{"TargetInfo present, no KEY_EXCH", 0},
+		{"TargetInfo present, KEY_EXCH negotiated", negotiateFlagNTLMSSPNEGOTIATEKEYEXCH},
+		{"TargetInfo present, KEY_EXCH+SIGN+SEAL negotiated", negotiateFlagNTLMSSPNEGOTIATEKEYEXCH | negotiateFlagNTLMSSPNEGOTIATESIGN | negotiateFlagNTLMSSPNEGOTIATESEAL},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ch := makeTestChallengeWithTargetInfo(t, minFlags|tc.flags)
+			am, err := NewAuthenticateMessage(ch, username, password, nil)
+			if err != nil {
+				t.Fatalf("NewAuthenticateMessage failed: %v", err)
+			}
+			lm := parseLmChallengeResponse(t, am)
+			if !bytes.Equal(lm, make([]byte, 24)) {
+				t.Fatalf("expected Z(24) LmChallengeResponse when TargetInfo is present, got %x", lm)
+			}
+		})
+	}
+}
+
 func TestNewAuthenticateMessage_ExportedSessionKey(t *testing.T) {
 	minFlags := negotiateFlagNTLMSSPNEGOTIATEUNICODE | negotiateFlagNTLMSSPNEGOTIATENTLM
 
