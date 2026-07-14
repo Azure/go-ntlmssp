@@ -433,3 +433,26 @@ func TestNewAuthenticateMessage_RequireSealing(t *testing.T) {
 		}
 	})
 }
+
+func TestNewAuthenticateMessage_SessionKeyNotPublishedOnMarshalError(t *testing.T) {
+	// Deliberately omit UNICODE: the challenge otherwise parses fine and the exported
+	// session key gets computed, but authenicateMessage.MarshalBinary requires UNICODE
+	// and will fail. The caller must not observe a key for an AUTHENTICATE token that
+	// was never produced.
+	ch := makeTestChallenge(t, negotiateFlagNTLMSSPNEGOTIATENTLM|
+		negotiateFlagNTLMSSPNEGOTIATEKEYEXCH|negotiateFlagNTLMSSPNEGOTIATESIGN)
+
+	sessionKey := []byte{0xde, 0xad, 0xbe, 0xef}
+	am, err := NewAuthenticateMessage(ch, username, password, &AuthenticateMessageOptions{
+		ExportedSessionKey: &sessionKey,
+	})
+	if err == nil {
+		t.Fatalf("expected NewAuthenticateMessage to fail without UNICODE, got a message")
+	}
+	if am != nil {
+		t.Fatalf("expected no AUTHENTICATE message on error, got %d bytes", len(am))
+	}
+	if sessionKey != nil {
+		t.Fatalf("expected ExportedSessionKey to remain nil when MarshalBinary fails, got %d bytes", len(sessionKey))
+	}
+}

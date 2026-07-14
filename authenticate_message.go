@@ -263,11 +263,16 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 		exportedSessionKey = keyExchangeKey
 	}
 
+	amBytes, err := am.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+
 	if options != nil && options.ExportedSessionKey != nil {
 		*options.ExportedSessionKey = exportedSessionKey
 	}
 
-	return am.MarshalBinary()
+	return amBytes, nil
 }
 
 // ProcessChallenge crafts an AUTHENTICATE message in response to the CHALLENGE message that was received from the server.
