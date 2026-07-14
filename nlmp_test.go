@@ -169,20 +169,26 @@ func TestNTLMv2Hash(t *testing.T) {
 	}
 }
 
+// makeTestChallenge builds a minimal, well-formed CHALLENGE_MESSAGE with the given flags.
+func makeTestChallenge(t *testing.T, flags negotiateFlags) []byte {
+	t.Helper()
+	c := challengeMessageFields{
+		messageHeader:   newMessageHeader(2),
+		NegotiateFlags:  flags,
+		ServerChallenge: [8]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef},
+	}
+	var buf bytes.Buffer
+	if err := binary.Write(&buf, binary.LittleEndian, &c); err != nil {
+		t.Fatalf("failed to build challenge: %v", err)
+	}
+	return buf.Bytes()
+}
+
 func TestNewAuthenticateMessage_ExportedSessionKey(t *testing.T) {
 	minFlags := negotiateFlagNTLMSSPNEGOTIATEUNICODE | negotiateFlagNTLMSSPNEGOTIATENTLM
 
 	makeChallenge := func(flags negotiateFlags) []byte {
-		c := challengeMessageFields{
-			messageHeader:   newMessageHeader(2),
-			NegotiateFlags:  flags,
-			ServerChallenge: [8]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef},
-		}
-		var buf bytes.Buffer
-		if err := binary.Write(&buf, binary.LittleEndian, &c); err != nil {
-			t.Fatalf("failed to build challenge: %v", err)
-		}
-		return buf.Bytes()
+		return makeTestChallenge(t, minFlags|flags)
 	}
 
 	// parseAuthenticateMessage extracts the fixed header and NtChallengeResponse
@@ -219,7 +225,7 @@ func TestNewAuthenticateMessage_ExportedSessionKey(t *testing.T) {
 
 	for _, tc := range flagMatrix {
 		t.Run(tc.name, func(t *testing.T) {
-			ch := makeChallenge(minFlags | tc.flags)
+			ch := makeChallenge(tc.flags)
 			var sessionKey []byte
 			am, err := NewAuthenticateMessage(ch, username, password, &AuthenticateMessageOptions{
 				ExportedSessionKey: &sessionKey,
@@ -268,14 +274,14 @@ func TestNewAuthenticateMessage_ExportedSessionKey(t *testing.T) {
 	}
 
 	t.Run("does not error when KEY_EXCH negotiated but no sink provided", func(t *testing.T) {
-		ch := makeChallenge(minFlags | negotiateFlagNTLMSSPNEGOTIATEKEYEXCH | negotiateFlagNTLMSSPNEGOTIATESIGN)
+		ch := makeChallenge(negotiateFlagNTLMSSPNEGOTIATEKEYEXCH | negotiateFlagNTLMSSPNEGOTIATESIGN)
 		if _, err := NewAuthenticateMessage(ch, username, password, nil); err != nil {
 			t.Fatalf("NewAuthenticateMessage failed: %v", err)
 		}
 	})
 
 	t.Run("stale key is reset when NewAuthenticateMessage errors", func(t *testing.T) {
-		ch := makeChallenge(minFlags | negotiateFlagNTLMSSPNEGOTIATEKEYEXCH)
+		ch := makeChallenge(negotiateFlagNTLMSSPNEGOTIATEKEYEXCH)
 		sessionKey := []byte{0xde, 0xad, 0xbe, 0xef}
 		_, err := NewAuthenticateMessage(ch, username, "not-valid-hex", &AuthenticateMessageOptions{
 			PasswordHashed:     true,
@@ -290,7 +296,7 @@ func TestNewAuthenticateMessage_ExportedSessionKey(t *testing.T) {
 	})
 
 	t.Run("stale key is reset when server requests NTLM v1 (LM_KEY)", func(t *testing.T) {
-		ch := makeChallenge(minFlags | negotiateFlagNTLMSSPNEGOTIATELMKEY)
+		ch := makeChallenge(negotiateFlagNTLMSSPNEGOTIATELMKEY)
 		sessionKey := []byte{0xde, 0xad, 0xbe, 0xef}
 		_, err := NewAuthenticateMessage(ch, username, password, &AuthenticateMessageOptions{
 			ExportedSessionKey: &sessionKey,
@@ -300,6 +306,53 @@ func TestNewAuthenticateMessage_ExportedSessionKey(t *testing.T) {
 		}
 		if sessionKey != nil {
 			t.Fatalf("expected stale session key to be reset to nil, got %d bytes", len(sessionKey))
+		}
+	})
+}
+
+func TestNewAuthenticateMessage_RequireSealing(t *testing.T) {
+	minFlags := negotiateFlagNTLMSSPNEGOTIATEUNICODE | negotiateFlagNTLMSSPNEGOTIATENTLM
+	var fullSealingFlags negotiateFlags = negotiateFlagNTLMSSPNEGOTIATEKEYEXCH |
+		negotiateFlagNTLMSSPNEGOTIATESIGN |
+		negotiateFlagNTLMSSPNEGOTIATESEAL |
+		negotiateFlagNTLMSSPNEGOTIATE128
+
+	// MS-NLMP 3.1.5.1.2: the client must enforce its own security policy against the
+	// server-selected flags. A server clearing any one of these must cause a hard
+	// failure rather than a silent downgrade.
+	cases := []struct {
+		name      string
+		dropFlag  negotiateFlags
+		expectErr bool
+	}{
+		{"server keeps all required flags", 0, false},
+		{"server drops KEY_EXCH", negotiateFlagNTLMSSPNEGOTIATEKEYEXCH, true},
+		{"server drops SIGN", negotiateFlagNTLMSSPNEGOTIATESIGN, true},
+		{"server drops SEAL", negotiateFlagNTLMSSPNEGOTIATESEAL, true},
+		{"server drops 128-bit", negotiateFlagNTLMSSPNEGOTIATE128, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ch := makeTestChallenge(t, minFlags|(fullSealingFlags&^tc.dropFlag))
+			var sessionKey []byte
+			_, err := NewAuthenticateMessage(ch, username, password, &AuthenticateMessageOptions{
+				ExportedSessionKey: &sessionKey,
+				RequireSealing:     true,
+			})
+			if tc.expectErr && err == nil {
+				t.Fatalf("expected NewAuthenticateMessage to fail when server drops a required sealing flag")
+			}
+			if !tc.expectErr && err != nil {
+				t.Fatalf("expected NewAuthenticateMessage to succeed, got: %v", err)
+			}
+		})
+	}
+
+	t.Run("not enforced when RequireSealing is false", func(t *testing.T) {
+		ch := makeTestChallenge(t, minFlags)
+		if _, err := NewAuthenticateMessage(ch, username, password, &AuthenticateMessageOptions{}); err != nil {
+			t.Fatalf("NewAuthenticateMessage failed: %v", err)
 		}
 	})
 }

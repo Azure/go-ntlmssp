@@ -124,6 +124,18 @@ type AuthenticateMessageOptions struct {
 	// KeyExchangeKey. Otherwise it is the KeyExchangeKey itself, and no
 	// encrypted key is sent on the wire.
 	ExportedSessionKey *[]byte
+
+	// RequireSealing, if true, causes NewAuthenticateMessage to fail unless the server's
+	// CHALLENGE message negotiated NTLMSSP_NEGOTIATE_KEY_EXCH, NTLMSSP_NEGOTIATE_SIGN,
+	// NTLMSSP_NEGOTIATE_SEAL, and NTLMSSP_NEGOTIATE_128.
+	//
+	// Per MS-NLMP 3.1.5.1.2, the client must enforce its own security policy against what
+	// the server actually selected, not just what the client requested in the NEGOTIATE
+	// message: a server is free to clear any of these bits in its response. Without this
+	// check, a caller that needs a sealed 128-bit session (e.g. WinRM encrypted transport)
+	// could silently proceed with a downgraded session instead. Set this whenever
+	// [NegotiateMessageOptions.RequestSealing] was set on the NEGOTIATE message.
+	RequireSealing bool
 }
 
 // NewAuthenticateMessage creates a new AUTHENTICATE message in response to the CHALLENGE message
@@ -151,6 +163,26 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 
 	if cm.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATELMKEY) {
 		return nil, errors.New("only NTLM v2 is supported, but server requested v1 (NTLMSSP_NEGOTIATE_LM_KEY)")
+	}
+
+	if options != nil && options.RequireSealing {
+		var missing []string
+		for _, f := range []struct {
+			flag negotiateFlags
+			name string
+		}{
+			{negotiateFlagNTLMSSPNEGOTIATEKEYEXCH, "NTLMSSP_NEGOTIATE_KEY_EXCH"},
+			{negotiateFlagNTLMSSPNEGOTIATESIGN, "NTLMSSP_NEGOTIATE_SIGN"},
+			{negotiateFlagNTLMSSPNEGOTIATESEAL, "NTLMSSP_NEGOTIATE_SEAL"},
+			{negotiateFlagNTLMSSPNEGOTIATE128, "NTLMSSP_NEGOTIATE_128"},
+		} {
+			if !cm.NegotiateFlags.Has(f.flag) {
+				missing = append(missing, f.name)
+			}
+		}
+		if len(missing) > 0 {
+			return nil, errors.New("server did not negotiate required sealing flags: " + strings.Join(missing, ", "))
+		}
 	}
 
 	am := authenicateMessage{

@@ -50,7 +50,9 @@ type NegotiateMessageOptions struct {
 	// RequestSealing additionally requests NTLMSSP_NEGOTIATE_KEY_EXCH, NTLMSSP_NEGOTIATE_SIGN,
 	// and NTLMSSP_NEGOTIATE_SEAL. Set this when the caller intends to sign or seal subsequent
 	// messages (e.g. WinRM encrypted transport). Pair it with
-	// [AuthenticateMessageOptions.ExportedSessionKey] to obtain the exported session key.
+	// [AuthenticateMessageOptions.ExportedSessionKey] to obtain the exported session key, and
+	// with [AuthenticateMessageOptions.RequireSealing] so that a server which declines to
+	// negotiate sealing causes an error instead of a silent downgrade.
 	RequestSealing bool
 }
 
@@ -63,7 +65,8 @@ type NegotiateMessageOptions struct {
 //
 // If the server requires message signing or sealing (e.g. WinRM encrypted transport), use
 // [NewNegotiateMessageWithOptions] instead and set [NegotiateMessageOptions.RequestSealing] along
-// with [AuthenticateMessageOptions.ExportedSessionKey] when calling [NewAuthenticateMessage].
+// with [AuthenticateMessageOptions.ExportedSessionKey] and [AuthenticateMessageOptions.RequireSealing]
+// when calling [NewAuthenticateMessage].
 func NewNegotiateMessage(domain, workstation string) ([]byte, error) {
 	return NewNegotiateMessageWithOptions(NegotiateMessageOptions{
 		Domain:      domain,
