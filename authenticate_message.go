@@ -115,9 +115,9 @@ type AuthenticateMessageOptions struct {
 	// ExportedSessionKey, if non-nil, receives the exported session key
 	// (MS-NLMP 3.1.5.1.2). Callers that need to sign or seal subsequent
 	// messages (e.g. WinRM encrypted transport) should set this field. The
-	// key is written before [NewAuthenticateMessage] returns, so callers can
+	// key is written before [NewAuthenticateMessage] returns successfully, so callers can
 	// use it to seal the request body that travels in the same HTTP request
-	// as the AUTHENTICATE token.
+	// as the AUTHENTICATE token. On error, the key remains nil.
 	//
 	// When NTLMSSP_NEGOTIATE_KEY_EXCH is negotiated together with SIGN or
 	// SEAL, this is a random key sent to the server encrypted with the
@@ -145,7 +145,7 @@ type AuthenticateMessageOptions struct {
 // To obtain the exported session key (needed for signing or sealing subsequent messages, e.g.
 // WinRM encrypted transport), set [AuthenticateMessageOptions.ExportedSessionKey] to a non-nil
 // pointer before calling. The pointed-to key is reset to nil at the start of the call and is
-// always populated before the function returns (see [AuthenticateMessageOptions.ExportedSessionKey]
+// populated only if the function succeeds (see [AuthenticateMessageOptions.ExportedSessionKey]
 // for how the key is derived).
 func NewAuthenticateMessage(challenge []byte, username, password string, options *AuthenticateMessageOptions) ([]byte, error) {
 	if options != nil && options.ExportedSessionKey != nil {
