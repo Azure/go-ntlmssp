@@ -27,8 +27,13 @@ type authenicateMessage struct {
 
 	NegotiateFlags negotiateFlags
 
+	// MIC, if non-nil, is written after a Version field at micOffset.
 	MIC []byte
 }
+
+// micOffset is where the MIC lives in an AUTHENTICATE message that carries one:
+// right after the fixed fields and the 8-byte Version field (MS-NLMP 2.2.1.3).
+var micOffset = binary.Size(&authenticateMessageFields{}) + binary.Size(&Version{})
 
 type authenticateMessageFields struct {
 	messageHeader
@@ -50,6 +55,9 @@ func (m *authenicateMessage) MarshalBinary() ([]byte, error) {
 	workstation := toUnicode(m.Workstation)
 
 	ptr := binary.Size(&authenticateMessageFields{})
+	if m.MIC != nil {
+		ptr = micOffset + len(m.MIC)
+	}
 	f := authenticateMessageFields{
 		messageHeader:       newMessageHeader(3),
 		NegotiateFlags:      m.NegotiateFlags,
@@ -63,11 +71,26 @@ func (m *authenicateMessage) MarshalBinary() ([]byte, error) {
 		f.SessionKey = newVarField(&ptr, len(m.EncryptedRandomSessionKey))
 	}
 
-	f.NegotiateFlags.Unset(negotiateFlagNTLMSSPNEGOTIATEVERSION)
+	// The Version field is only written when a MIC follows it. It MUST be zero
+	// unless NTLMSSP_NEGOTIATE_VERSION is set (MS-NLMP 2.2.1.3).
+	var version Version
+	if m.MIC != nil && f.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEVERSION) {
+		version = DefaultVersion()
+	} else {
+		f.NegotiateFlags.Unset(negotiateFlagNTLMSSPNEGOTIATEVERSION)
+	}
 
 	b := bytes.Buffer{}
 	if err := binary.Write(&b, binary.LittleEndian, &f); err != nil {
 		return nil, err
+	}
+	if m.MIC != nil {
+		if err := binary.Write(&b, binary.LittleEndian, &version); err != nil {
+			return nil, err
+		}
+		if err := binary.Write(&b, binary.LittleEndian, m.MIC); err != nil {
+			return nil, err
+		}
 	}
 	if err := binary.Write(&b, binary.LittleEndian, &m.LmChallengeResponse); err != nil {
 		return nil, err
@@ -136,6 +159,12 @@ type AuthenticateMessageOptions struct {
 	// could silently proceed with a downgraded session instead. Set this whenever
 	// [NegotiateMessageOptions.RequestSealing] was set on the NEGOTIATE message.
 	RequireSealing bool
+
+	// NegotiateMessage is the NEGOTIATE message that was sent to the server, exactly as
+	// sent. If set, and the server's CHALLENGE message carries an MsvAvTimestamp, a MIC
+	// covering all three messages is added to the AUTHENTICATE message (MS-NLMP 3.1.5.1.2),
+	// protecting the handshake against tampering. If nil, no MIC is sent.
+	NegotiateMessage []byte
 }
 
 // NewAuthenticateMessage creates a new AUTHENTICATE message in response to the CHALLENGE message
@@ -221,8 +250,17 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 		ntlmV2Hash = getNtlmV2Hash(password, am.UserName, am.DomainName)
 	}
 
+	targetInfo := cm.TargetInfoRaw
+	if options != nil && options.NegotiateMessage != nil && cm.TargetInfo[avIDMsvAvTimestamp] != nil {
+		var err error
+		if targetInfo, err = withMICFlag(targetInfo); err != nil {
+			return nil, err
+		}
+		am.MIC = make([]byte, 16) // zeroed while the MIC is computed
+	}
+
 	am.NtChallengeResponse = computeNtlmV2Response(ntlmV2Hash,
-		cm.ServerChallenge[:], clientChallenge, timestamp, cm.TargetInfoRaw)
+		cm.ServerChallenge[:], clientChallenge, timestamp, targetInfo)
 
 	if cm.TargetInfoRaw == nil {
 		am.LmChallengeResponse = computeLmV2Response(ntlmV2Hash,
@@ -266,6 +304,11 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 	amBytes, err := am.MarshalBinary()
 	if err != nil {
 		return nil, err
+	}
+
+	if am.MIC != nil {
+		mic := hmacMd5(exportedSessionKey, options.NegotiateMessage, challenge, amBytes)
+		copy(amBytes[micOffset:], mic)
 	}
 
 	if options != nil && options.ExportedSessionKey != nil {
