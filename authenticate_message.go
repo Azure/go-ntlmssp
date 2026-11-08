@@ -27,13 +27,13 @@ type authenicateMessage struct {
 
 	NegotiateFlags negotiateFlags
 
-	// MIC, if non-nil, is written after a Version field at micOffset.
+	// MIC, if non-nil, is written right after the fixed fields, at micOffset.
 	MIC []byte
 }
 
 // micOffset is where the MIC lives in an AUTHENTICATE message that carries one:
-// right after the fixed fields and the 8-byte Version field (MS-NLMP 2.2.1.3).
-var micOffset = binary.Size(&authenticateMessageFields{}) + binary.Size(&Version{})
+// right after the fixed fields, which end with the Version field (MS-NLMP 2.2.1.3).
+var micOffset = binary.Size(&authenticateMessageFields{})
 
 type authenticateMessageFields struct {
 	messageHeader
@@ -44,6 +44,7 @@ type authenticateMessageFields struct {
 	Workstation         varField
 	SessionKey          varField
 	NegotiateFlags      negotiateFlags
+	Version             Version
 }
 
 func (m *authenicateMessage) MarshalBinary() ([]byte, error) {
@@ -54,10 +55,7 @@ func (m *authenicateMessage) MarshalBinary() ([]byte, error) {
 	domain, user := toUnicode(m.DomainName), toUnicode(m.UserName)
 	workstation := toUnicode(m.Workstation)
 
-	ptr := binary.Size(&authenticateMessageFields{})
-	if m.MIC != nil {
-		ptr = micOffset + len(m.MIC)
-	}
+	ptr := binary.Size(&authenticateMessageFields{}) + len(m.MIC)
 	f := authenticateMessageFields{
 		messageHeader:       newMessageHeader(3),
 		NegotiateFlags:      m.NegotiateFlags,
@@ -71,26 +69,17 @@ func (m *authenicateMessage) MarshalBinary() ([]byte, error) {
 		f.SessionKey = newVarField(&ptr, len(m.EncryptedRandomSessionKey))
 	}
 
-	// The Version field is only written when a MIC follows it. It MUST be zero
-	// unless NTLMSSP_NEGOTIATE_VERSION is set (MS-NLMP 2.2.1.3).
-	var version Version
-	if m.MIC != nil && f.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEVERSION) {
-		version = DefaultVersion()
-	} else {
-		f.NegotiateFlags.Unset(negotiateFlagNTLMSSPNEGOTIATEVERSION)
+	// The Version field MUST be zero unless NTLMSSP_NEGOTIATE_VERSION is set (MS-NLMP 2.2.1.3).
+	if f.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEVERSION) {
+		f.Version = DefaultVersion()
 	}
 
 	b := bytes.Buffer{}
 	if err := binary.Write(&b, binary.LittleEndian, &f); err != nil {
 		return nil, err
 	}
-	if m.MIC != nil {
-		if err := binary.Write(&b, binary.LittleEndian, &version); err != nil {
-			return nil, err
-		}
-		if err := binary.Write(&b, binary.LittleEndian, m.MIC); err != nil {
-			return nil, err
-		}
+	if err := binary.Write(&b, binary.LittleEndian, m.MIC); err != nil {
+		return nil, err
 	}
 	if err := binary.Write(&b, binary.LittleEndian, &m.LmChallengeResponse); err != nil {
 		return nil, err
