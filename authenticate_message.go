@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"math"
 	"strings"
 	"time"
 )
@@ -260,6 +261,11 @@ func NewAuthenticateMessage(challenge []byte, username, password string, options
 		am.LmChallengeResponse = make([]byte, 24)
 	}
 
+	// The security buffer length is 16 bits; a huge server TargetInfo, plus the MIC
+	// flag, could otherwise wrap it silently.
+	if len(am.NtChallengeResponse) > math.MaxUint16 {
+		return nil, errors.New("NTLMv2 challenge response is too long")
+	}
 	if len(am.NtChallengeResponse) < 16 {
 		return nil, errors.New("invalid NTLMv2 challenge response: missing NTProofStr")
 	}
