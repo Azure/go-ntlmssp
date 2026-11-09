@@ -289,9 +289,10 @@ func TestNegotiatorSendsMIC(t *testing.T) {
 }
 
 func TestNewAuthenticateMessage_RejectsOversizedNTResponse(t *testing.T) {
-	// A TargetInfo that fits in the CHALLENGE but, with the MIC flag added, makes the
-	// NTLMv2 response longer than its 16-bit security-buffer length allows.
-	big := make([]byte, 65480)
+	// The NTLMv2 response is 16 + 28 + len(TargetInfo) + 4 bytes, and this TargetInfo is
+	// len(big) + 20, so the response is 65532 bytes without the MIC flag and 65540 with
+	// it: only adding the flag crosses the 16-bit security-buffer limit.
+	big := make([]byte, 65464)
 	targetInfo := binary.LittleEndian.AppendUint16(nil, uint16(avIDMsvAvNbDomainName))
 	targetInfo = binary.LittleEndian.AppendUint16(targetInfo, uint16(len(big)))
 	targetInfo = append(targetInfo, big...)
@@ -310,6 +311,10 @@ func TestNewAuthenticateMessage_RejectsOversizedNTResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	buf.Write(targetInfo)
+
+	if _, err := NewAuthenticateMessage(buf.Bytes(), username, password, nil); err != nil {
+		t.Fatalf("expected success without a MIC (response fits), got %v", err)
+	}
 
 	negotiate, err := NewNegotiateMessageWithOptions(NegotiateMessageOptions{})
 	if err != nil {
