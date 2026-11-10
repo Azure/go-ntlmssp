@@ -122,8 +122,8 @@ func TestNewAuthenticateMessage_MIC(t *testing.T) {
 			t.Fatalf("NewAuthenticateMessage failed: %v", err)
 		}
 		f := parseAuthenticateFields(t, am)
-		if f.LmChallengeResponse.BufferOffset != 72 {
-			t.Fatalf("expected no MIC (payload at 72), got payload at %d", f.LmChallengeResponse.BufferOffset)
+		if f.LmChallengeResponse.BufferOffset != 64 {
+			t.Fatalf("expected no MIC (payload at 64), got payload at %d", f.LmChallengeResponse.BufferOffset)
 		}
 		nt, err := f.NtChallengeResponse.ReadFrom(am)
 		if err != nil {
@@ -140,8 +140,8 @@ func TestNewAuthenticateMessage_MIC(t *testing.T) {
 			t.Fatalf("NewAuthenticateMessage failed: %v", err)
 		}
 		f := parseAuthenticateFields(t, am)
-		if f.LmChallengeResponse.BufferOffset != 72 {
-			t.Fatalf("expected payload right after the Version field at 72, got %d", f.LmChallengeResponse.BufferOffset)
+		if f.LmChallengeResponse.BufferOffset != 64 {
+			t.Fatalf("expected the original 64-byte header without a MIC, got payload at %d", f.LmChallengeResponse.BufferOffset)
 		}
 	})
 }
@@ -180,8 +180,26 @@ func TestNewAuthenticateMessage_Version(t *testing.T) {
 				t.Fatalf("NewAuthenticateMessage failed: %v", err)
 			}
 
-			// MS-NLMP 2.2.1.3: Version (bytes 64-71) is populated only when
-			// NTLMSSP_NEGOTIATE_VERSION is negotiated, and is zero otherwise.
+			f := parseAuthenticateFields(t, am)
+			gotVersionFlag := f.NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEVERSION)
+
+			if !tc.mic {
+				// Without a MIC the original layout is kept for existing callers: a
+				// 64-byte header, no Version field, and the VERSION flag cleared.
+				if f.LmChallengeResponse.BufferOffset != 64 {
+					t.Fatalf("expected payload at 64, got %d", f.LmChallengeResponse.BufferOffset)
+				}
+				if gotVersionFlag {
+					t.Fatalf("expected NTLMSSP_NEGOTIATE_VERSION to be cleared without a MIC")
+				}
+				return
+			}
+
+			// With a MIC, Version (bytes 64-71) precedes it and is populated only when
+			// NTLMSSP_NEGOTIATE_VERSION is negotiated, and is zero otherwise (MS-NLMP 2.2.1.3).
+			if f.LmChallengeResponse.BufferOffset != 88 {
+				t.Fatalf("expected payload at 88, got %d", f.LmChallengeResponse.BufferOffset)
+			}
 			want := make([]byte, 8)
 			if tc.version {
 				want = defaultVersion.Bytes()
@@ -189,8 +207,8 @@ func TestNewAuthenticateMessage_Version(t *testing.T) {
 			if !bytes.Equal(am[64:72], want) {
 				t.Fatalf("expected Version bytes %x, got %x", want, am[64:72])
 			}
-			if got := parseAuthenticateFields(t, am).NegotiateFlags.Has(negotiateFlagNTLMSSPNEGOTIATEVERSION); got != tc.version {
-				t.Fatalf("expected NTLMSSP_NEGOTIATE_VERSION set=%v, got %v", tc.version, got)
+			if gotVersionFlag != tc.version {
+				t.Fatalf("expected NTLMSSP_NEGOTIATE_VERSION set=%v, got %v", tc.version, gotVersionFlag)
 			}
 		})
 	}
