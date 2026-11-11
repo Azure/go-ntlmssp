@@ -235,7 +235,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Server requested Negotiate/NTLM, start handshake
 
 	// First step: send negotiate message
-	resp = clientHandshake(rt, req, resauth.schema, l.WorkstationDomain, l.WorkstationName)
+	resp, negotiate := clientHandshake(rt, req, resauth.schema, l.WorkstationDomain, l.WorkstationName)
 	if resp == nil {
 		return originalResp, nil
 	}
@@ -251,7 +251,7 @@ func (l Negotiator) RoundTrip(req *http.Request) (*http.Response, error) {
 	drainResponse(resp)
 
 	// Second step: process challenge and resend the original body with the authenticate message
-	resp = completeHandshake(rt, resauth, req, id, l.WorkstationName)
+	resp = completeHandshake(rt, resauth, req, id, negotiate, l.WorkstationName)
 	if resp == nil {
 		return originalResp, nil
 	}
@@ -283,26 +283,28 @@ func rewindBody(req *http.Request) error {
 	return nil
 }
 
-func clientHandshake(rt http.RoundTripper, req *http.Request, schema string, domain, workstation string) *http.Response {
+// clientHandshake sends the NEGOTIATE message and returns the server's response
+// along with the NEGOTIATE message that was sent, which the MIC covers.
+func clientHandshake(rt http.RoundTripper, req *http.Request, schema string, domain, workstation string) (*http.Response, []byte) {
 	if rewindBody(req) != nil {
-		return nil
+		return nil, nil
 	}
 	auth, err := NewNegotiateMessageWithOptions(NegotiateMessageOptions{
 		Domain:      domain,
 		Workstation: workstation,
 	})
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	req.Header.Set("Authorization", schema+" "+base64.StdEncoding.EncodeToString(auth))
 	res, err := rt.RoundTrip(req)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	return res
+	return res, auth
 }
 
-func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Request, id identity, workstation string) *http.Response {
+func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Request, id identity, negotiate []byte, workstation string) *http.Response {
 	if rewindBody(req) != nil {
 		return nil
 	}
@@ -315,13 +317,10 @@ func completeHandshake(rt http.RoundTripper, resauth authheader, req *http.Reque
 		// otherwise the negotiation is over.
 		return nil
 	}
-	var opts *AuthenticateMessageOptions
-	if workstation != "" {
-		opts = &AuthenticateMessageOptions{
-			WorkstationName: workstation,
-		}
-	}
-	auth, err := NewAuthenticateMessage(challenge, id.username, id.password, opts)
+	auth, err := NewAuthenticateMessage(challenge, id.username, id.password, &AuthenticateMessageOptions{
+		WorkstationName:  workstation,
+		NegotiateMessage: negotiate,
+	})
 	if err != nil {
 		return nil
 	}
